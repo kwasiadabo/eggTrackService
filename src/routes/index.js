@@ -7,14 +7,17 @@ const {
 	requireAdmin,
 } = require('../middleware/auth');
 
-const purchasesCtrl = require('../controllers/purchasesController');
-const inventoryCtrl = require('../controllers/inventoryController');
-const salesCtrl = require('../controllers/salesController');
-const customersCtrl = require('../controllers/customersController');
-const reportingCtrl = require('../controllers/customersController');
-const paymentsCtrl = require('../controllers/paymentsController');
-const expensesCtrl = require('../controllers/expensesController');
-const dashboardCtrl = require('../controllers/dashboardController');
+const purchasesCtrl          = require('../controllers/purchasesController');
+const inventoryCtrl          = require('../controllers/inventoryController');
+const salesCtrl              = require('../controllers/salesController');
+const customersCtrl          = require('../controllers/customersController');
+const paymentsCtrl           = require('../controllers/paymentsController');
+const expensesCtrl           = require('../controllers/expensesController');
+const dashboardCtrl          = require('../controllers/dashboardController');
+const reportRecipientsCtrl   = require('../controllers/reportRecipientsController');
+const emailLogsCtrl          = require('../controllers/emailLogsController');
+const emailScheduleCtrl      = require('../controllers/emailScheduleController');
+const farmsCtrl              = require('../controllers/farmsController');
 
 const EGG_SIZES = ['small', 'medium', 'large'];
 
@@ -68,6 +71,29 @@ router.get('/dashboard', ...requireViewer, dashboardCtrl.getDashboard);
  */
 router.get('/inventory', ...requireViewer, inventoryCtrl.getInventory);
 
+/**
+ * @openapi
+ * /api/inventory/reconcile:
+ *   post:
+ *     summary: Reconcile inventory from purchases and sales (admin only)
+ *     description: Recalculates each egg size stock as total active purchases minus total active sales and updates the Inventory table.
+ *     tags: [Inventory]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Reconciled inventory
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 message: { type: string }
+ *                 data: { type: array, items: { $ref: '#/components/schemas/InventoryItem' } }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.post('/inventory/reconcile', ...requireAdmin, inventoryCtrl.reconcileInventory);
+
 // ════════════════════════════════════════════════════════════
 //  PURCHASES  (viewer=GET, manager=POST/PUT, admin=DELETE)
 // ════════════════════════════════════════════════════════════
@@ -92,6 +118,9 @@ router.get('/inventory', ...requireViewer, inventoryCtrl.getInventory);
  *       401: { $ref: '#/components/responses/Unauthorized' }
  */
 router.get('/purchases', ...requireViewer, purchasesCtrl.getPurchases);
+
+// Batch create — must be before /purchases/:id to avoid param clash
+router.post('/purchases/batch', ...requireManager, purchasesCtrl.createBatchPurchase);
 
 /**
  * @openapi
@@ -213,6 +242,9 @@ router.delete('/purchases/:id', ...requireAdmin, purchasesCtrl.deletePurchase);
  */
 router.get('/sales', ...requireViewer, salesCtrl.getSales);
 
+// Multi-line invoice — registered before /sales/:id to avoid param clash
+router.post('/sales/invoice', ...requireManager, salesCtrl.createInvoice);
+
 /**
  * @openapi
  * /api/sales/{id}:
@@ -304,6 +336,30 @@ router.put('/sales/:id', ...requireManager, salesCtrl.updateSale);
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
 router.delete('/sales/:id', ...requireAdmin, salesCtrl.deleteSale);
+
+/**
+ * @openapi
+ * /api/sales/{id}/invoice:
+ *   get:
+ *     summary: Generate a print-ready HTML invoice for a sale
+ *     tags: [Sales]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *         description: Sale ID
+ *     responses:
+ *       200:
+ *         description: HTML invoice document
+ *         content:
+ *           text/html:
+ *             schema: { type: string }
+ *       404: { description: Sale not found }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ */
+router.get('/sales/:id/invoice', ...requireViewer, salesCtrl.getSaleInvoice);
 
 // ════════════════════════════════════════════════════════════
 //  CUSTOMERS
@@ -671,81 +727,161 @@ router.put('/expenses/:id', ...requireManager, expensesCtrl.updateExpense);
  */
 router.delete('/expenses/:id', ...requireAdmin, expensesCtrl.deleteExpense);
 
+// ════════════════════════════════════════════════════════════
+//  REPORT RECIPIENTS
+// ════════════════════════════════════════════════════════════
+
 /**
  * @openapi
- * /api/customerstatement:
+ * /api/report-recipients:
  *   get:
- *     summary: Get customer statement ledger, summary, or overdue report
- *     tags: [Customers]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: customerId
- *         required: false
- *         schema:
- *           type: integer
- *         description: Customer ID. Omit to retrieve statements for all customers.
- *
- *       - in: query
- *         name: dateFrom
- *         required: false
- *         schema:
- *           type: string
- *           format: date
- *         description: Start date for the statement period (YYYY-MM-DD).
- *
- *       - in: query
- *         name: dateTo
- *         required: false
- *         schema:
- *           type: string
- *           format: date
- *         description: End date for the statement period (YYYY-MM-DD).
- *
- *       - in: query
- *         name: includeOpeningBalance
- *         required: false
- *         schema:
- *           type: boolean
- *           default: true
- *         description: Include opening balance brought forward before the statement period.
- *
- *       - in: query
- *         name: mode
- *         required: false
- *         schema:
- *           type: integer
- *           enum: [1, 2, 3]
- *           default: 1
- *         description: |
- *           Report mode:
- *           1 = Detailed Ledger
- *           2 = Customer Summary
- *           3 = Overdue Customers Only
- *
- *       - in: query
- *         name: overdueDays
- *         required: false
- *         schema:
- *           type: integer
- *           default: 30
- *         description: Number of days after which a customer is considered overdue.
- *
+ *     summary: List all debtors report email recipients
+ *     tags: [Report Recipients]
+ *     security: [{ bearerAuth: [] }]
  *     responses:
  *       200:
- *         description: Customer statement generated successfully
- *       400:
- *         description: Invalid request parameters
- *       404:
- *         description: Customer not found
- *       500:
- *         description: Internal server error
+ *         description: Recipients list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:        { type: integer }
+ *                       email:     { type: string }
+ *                       name:      { type: string }
+ *                       isActive:  { type: boolean }
+ *                       createdAt: { type: string, format: date-time }
  */
-router.get(
-	'/customerstatement',
+router.get('/report-recipients', ...requireViewer, reportRecipientsCtrl.getRecipients);
+
+/**
+ * @openapi
+ * /api/report-recipients:
+ *   post:
+ *     summary: Add a report email recipient (manager+)
+ *     tags: [Report Recipients]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email: { type: string, format: email }
+ *               name:  { type: string }
+ *     responses:
+ *       201: { description: Recipient added }
+ *       409: { description: Email already exists }
+ */
+router.post(
+	'/report-recipients',
 	...requireManager,
-	reportingCtrl.getCustomerStatement,
+	validate({ email: { required: true } }),
+	reportRecipientsCtrl.addRecipient,
 );
+
+/**
+ * @openapi
+ * /api/report-recipients/{id}:
+ *   put:
+ *     summary: Update a recipient's name or active status (manager+)
+ *     tags: [Report Recipients]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: Recipient updated }
+ *       404: { description: Not found }
+ */
+router.put('/report-recipients/:id', ...requireManager, reportRecipientsCtrl.updateRecipient);
+
+/**
+ * @openapi
+ * /api/report-recipients/{id}:
+ *   delete:
+ *     summary: Remove a report email recipient (admin only)
+ *     tags: [Report Recipients]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: Recipient removed }
+ *       404: { description: Not found }
+ */
+router.delete('/report-recipients/:id', ...requireAdmin, reportRecipientsCtrl.deleteRecipient);
+
+// ════════════════════════════════════════════════════════════
+//  EMAIL LOGS
+// ════════════════════════════════════════════════════════════
+
+/**
+ * @openapi
+ * /api/email-logs:
+ *   get:
+ *     summary: View history of sent report emails (viewer+)
+ *     tags: [Email Logs]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *         description: Max number of records to return
+ *       - in: query
+ *         name: jobType
+ *         schema: { type: string }
+ *         description: Filter by job type (e.g. debtors_report)
+ *     responses:
+ *       200:
+ *         description: Email log entries
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:             { type: integer }
+ *                       jobType:        { type: string }
+ *                       recipients:     { type: string }
+ *                       recipientCount: { type: integer }
+ *                       debtorCount:    { type: integer }
+ *                       status:         { type: string, enum: [sent, failed] }
+ *                       errorMessage:   { type: string }
+ *                       sentAt:         { type: string, format: date-time }
+ */
+router.get('/email-logs', ...requireViewer, emailLogsCtrl.getEmailLogs);
+
+// ── Email schedule (admin only) ───────────────────────────────────────────────
+router.get('/email-schedule', ...requireAdmin, emailScheduleCtrl.getSchedule);
+router.put('/email-schedule', ...requireAdmin, emailScheduleCtrl.updateSchedule);
+
+// ── Farms ─────────────────────────────────────────────────────────────────────
+router.get('/farms/active', ...requireViewer, farmsCtrl.getActiveFarms); // for purchase dropdown
+router.get('/farms',        ...requireAdmin,  farmsCtrl.getFarms);       // full list with inactive
+router.post('/farms',
+  ...requireAdmin,
+  validate({ name: { required: true } }),
+  farmsCtrl.createFarm
+);
+router.put('/farms/:id',    ...requireAdmin, farmsCtrl.updateFarm);
+router.delete('/farms/:id', ...requireAdmin, farmsCtrl.deleteFarm);
 
 module.exports = router;

@@ -1,30 +1,31 @@
 const cron = require('node-cron');
 const transporter = require('../config/mailer');
 const { getDebtors } = require('../services/paymentsService');
-
-const EMAIL_RECIPIENTS = [
-  'kwasiadaboboakye@gmail.com',
-  'owkwasi@yahoo.com',
-];
+const { getActiveRecipients } = require('../services/reportRecipientsService');
+const { logEmail } = require('../services/emailLogsService');
 
 function formatCurrency(amount) {
-  return `GHS ${parseFloat(amount).toFixed(2)}`;
+	return `GHS ${parseFloat(amount).toFixed(2)}`;
 }
 
 function formatDate(date) {
-  if (!date) return '—';
-  return new Date(date).toLocaleDateString('en-GB', {
-    day: '2-digit', month: 'short', year: 'numeric',
-  });
+	if (!date) return '—';
+	return new Date(date).toLocaleDateString('en-GB', {
+		day: '2-digit',
+		month: 'short',
+		year: 'numeric',
+	});
 }
 
 // ─── Email ────────────────────────────────────────────────────
 
 function buildEmailHtml(debtors, generatedAt) {
-  const total = debtors.reduce((sum, d) => sum + parseFloat(d.balance), 0);
-  const overdueCount = debtors.filter(d => d.overdue).length;
+	const total = debtors.reduce((sum, d) => sum + parseFloat(d.balance), 0);
+	const overdueCount = debtors.filter((d) => d.overdue).length;
 
-  const rows = debtors.map((d, i) => `
+	const rows = debtors
+		.map(
+			(d, i) => `
     <tr style="background:${i % 2 === 0 ? '#ffffff' : '#f9f9f9'}">
       <td style="padding:10px 12px;border-bottom:1px solid #eee">${d.customerName}</td>
       <td style="padding:10px 12px;border-bottom:1px solid #eee;color:#555">${d.phone || '—'}</td>
@@ -40,9 +41,11 @@ function buildEmailHtml(debtors, generatedAt) {
         ">${d.overdue ? `OVERDUE (${d.daysDue}d)` : `${d.daysDue}d`}</span>
       </td>
     </tr>
-  `).join('');
+  `,
+		)
+		.join('');
 
-  return `
+	return `
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
@@ -69,13 +72,16 @@ function buildEmailHtml(debtors, generatedAt) {
       </div>
     </div>
 
-    ${debtors.length === 0 ? `
+    ${
+			debtors.length === 0
+				? `
       <div style="padding:48px;text-align:center;color:#555">
         <div style="font-size:48px">🎉</div>
         <p style="font-size:18px;font-weight:600;margin:12px 0 4px">No outstanding debts!</p>
         <p style="color:#888">All customers are up to date.</p>
       </div>
-    ` : `
+    `
+				: `
     <div style="padding:24px 32px;overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:14px">
         <thead>
@@ -99,7 +105,8 @@ function buildEmailHtml(debtors, generatedAt) {
         </tfoot>
       </table>
     </div>
-    `}
+    `
+		}
 
     <div style="padding:16px 32px;background:#f9f9f9;border-top:1px solid #eee;font-size:12px;color:#999;text-align:center">
       This is an automated report from EggTrack. Do not reply to this email.
@@ -112,30 +119,80 @@ function buildEmailHtml(debtors, generatedAt) {
 // ─── Main job ─────────────────────────────────────────────────
 
 async function sendDebtorsReport() {
-  try {
-    const debtors = await getDebtors();
-    const generatedAt = new Date().toLocaleString('en-GB', {
-      dateStyle: 'full', timeStyle: 'short',
-    });
-    const subject = `EggTrack Debtors Report — ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+	let recipients = [];
+	let debtors = [];
+	try {
+		[recipients, debtors] = await Promise.all([
+			getActiveRecipients(),
+			getDebtors(),
+		]);
 
-    // Email — all recipients in one call
-    await transporter.sendMail({
-      from:    `"EggTrack Reports" <${process.env.EMAIL_USER}>`,
-      to:      EMAIL_RECIPIENTS.join(', '),
-      subject,
-      html:    buildEmailHtml(debtors, generatedAt),
-    });
-    console.log(`✅ Debtors email sent to ${EMAIL_RECIPIENTS.join(', ')} (${debtors.length} debtors)`);
+		if (recipients.length === 0) {
+			console.warn('⚠️  No active recipients — skipping debtors report');
+			return;
+		}
 
-  } catch (err) {
-    console.error('❌ Failed to send debtors report:', err.message);
-  }
+		const generatedAt = new Date().toLocaleString('en-GB', {
+			dateStyle: 'full',
+			timeStyle: 'short',
+		});
+		const subject = `EggTrack Debtors Report — ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+		await transporter.sendMail({
+			from: `"EggTrack Reports" <${process.env.EMAIL_USER}>`,
+			to: recipients.join(', '),
+			subject,
+			html: buildEmailHtml(debtors, generatedAt),
+		});
+
+		await logEmail({ recipients, debtorCount: debtors.length, status: 'sent' });
+		console.log(
+			`✅ Debtors email sent to ${recipients.join(', ')} (${debtors.length} debtors)`,
+		);
+	} catch (err) {
+		await logEmail({
+			recipients,
+			debtorCount: debtors.length,
+			status: 'failed',
+			errorMessage: err.message,
+		}).catch(() => {});
+		console.error('❌ Failed to send debtors report:', err.message);
+	}
+}
+
+// ─── Scheduler (supports live rescheduling without restart) ──────────────────
+let currentTask = null;
+
+function _schedule(hour, minute) {
+	const cronExpr = `${minute} ${hour} * * *`;
+	const label = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+	currentTask = cron.schedule(cronExpr, sendDebtorsReport, {
+		timezone: 'Africa/Accra',
+	});
+	console.log(
+		`📅 Debtors report job scheduled — daily at ${label} (Africa/Accra)`,
+	);
 }
 
 function registerDebtorsJob() {
-  cron.schedule('0 8 * * *', sendDebtorsReport, { timezone: 'Africa/Accra' });
-  console.log('📅 Debtors report job scheduled — daily at 08:00 AM (Africa/Accra)');
+	_schedule(
+		parseInt(process.env.REPORT_HOUR || 7),
+		parseInt(process.env.REPORT_MINUTE || 15),
+	);
 }
 
-module.exports = { registerDebtorsJob, sendDebtorsReport };
+function rescheduleDebtorsJob(hour, minute) {
+	if (currentTask) {
+		currentTask.stop();
+		currentTask = null;
+	}
+	process.env.REPORT_HOUR = String(hour);
+	process.env.REPORT_MINUTE = String(minute);
+	_schedule(hour, minute);
+}
+
+module.exports = {
+	registerDebtorsJob,
+	sendDebtorsReport,
+	rescheduleDebtorsJob,
+};

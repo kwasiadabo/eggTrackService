@@ -5,7 +5,7 @@ async function getAllSales() {
   const result = await pool.request().query(`
     SELECT s.id, s.customerId, c.name AS customerName,
            s.eggSize, s.quantity, s.unitPrice, s.totalAmount,
-           s.saleDate, s.notes, s.createdAt, s.updatedAt
+           s.saleDate, s.notes, s.invoiceNo, s.createdAt, s.updatedAt
     FROM Sales s JOIN Customers c ON c.id = s.customerId
     WHERE s.deletedAt IS NULL
     ORDER BY s.saleDate DESC, s.createdAt DESC
@@ -134,4 +134,77 @@ async function deleteSale(id, deletedBy) {
   } catch (err) { await transaction.rollback(); throw err; }
 }
 
-module.exports = { getAllSales, getSaleById, createSale, updateSale, deleteSale };
+// ── Multi-line invoice: one atomic transaction, shared invoice number ─────────
+function generateInvoiceNo(date) {
+  const d   = date ? new Date(date) : new Date();
+  const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
+  return `INV-${ymd}-${String(Math.floor(1000 + Math.random() * 9000))}`;
+}
+
+async function createInvoice({ customerId, saleDate, notes, items }) {
+  if (!items || items.length === 0) {
+    const e = new Error('Invoice must have at least one line item'); e.statusCode = 400; throw e;
+  }
+
+  const pool = await getPool();
+
+  // Aggregate per-size totals and validate stock in one pass
+  const sizeQtys = {};
+  for (const item of items) {
+    sizeQtys[item.eggSize] = (sizeQtys[item.eggSize] || 0) + parseInt(item.quantity);
+  }
+  for (const [eggSize, totalQty] of Object.entries(sizeQtys)) {
+    const stock = await pool.request()
+      .input('eggSize', sql.NVarChar(10), eggSize)
+      .query('SELECT quantity FROM Inventory WHERE eggSize = @eggSize');
+    const available = stock.recordset[0]?.quantity || 0;
+    if (available < totalQty) {
+      const e = new Error(`Insufficient stock for ${eggSize} eggs. Available: ${available}, required: ${totalQty}`);
+      e.statusCode = 400; throw e;
+    }
+  }
+
+  const invoiceNo   = generateInvoiceNo(saleDate);
+  const transaction = new sql.Transaction(pool);
+  const insertedIds = [];
+
+  try {
+    await transaction.begin();
+    for (const item of items) {
+      const r = await transaction.request()
+        .input('customerId', sql.Int,           parseInt(customerId))
+        .input('eggSize',    sql.NVarChar(10),  item.eggSize)
+        .input('quantity',   sql.Int,           parseInt(item.quantity))
+        .input('unitPrice',  sql.Decimal(10,2), parseFloat(item.unitPrice))
+        .input('saleDate',   sql.Date,          saleDate || new Date())
+        .input('notes',      sql.NVarChar(500), notes || null)
+        .input('invoiceNo',  sql.NVarChar(20),  invoiceNo)
+        .query(`
+          INSERT INTO Sales (customerId, eggSize, quantity, unitPrice, saleDate, notes, invoiceNo)
+          OUTPUT INSERTED.id
+          VALUES (@customerId, @eggSize, @quantity, @unitPrice, @saleDate, @notes, @invoiceNo)
+        `);
+      insertedIds.push(r.recordset[0].id);
+      await transaction.request()
+        .input('qty',     sql.Int,          parseInt(item.quantity))
+        .input('eggSize', sql.NVarChar(10), item.eggSize)
+        .query(`UPDATE Inventory SET quantity = quantity - @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
+    }
+    await transaction.commit();
+
+    const full = await pool.request().query(`
+      SELECT s.*, c.name AS customerName, c.phone, c.address
+      FROM Sales s JOIN Customers c ON c.id = s.customerId
+      WHERE s.id IN (${insertedIds.join(',')})
+      ORDER BY s.id
+    `);
+    const rows = full.recordset;
+    return {
+      invoiceNo,
+      sales: rows,
+      customer: { name: rows[0].customerName, phone: rows[0].phone, address: rows[0].address },
+    };
+  } catch (err) { await transaction.rollback(); throw err; }
+}
+
+module.exports = { getAllSales, getSaleById, createSale, updateSale, deleteSale, createInvoice };

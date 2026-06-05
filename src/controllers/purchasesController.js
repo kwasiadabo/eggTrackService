@@ -15,4 +15,15 @@ async function updatePurchase(req, res, next) {
 async function deletePurchase(req, res, next) {
   try { await svc.deletePurchase(req.params.id, req.user.sub); res.json({ success: true, message: 'Purchase deleted and inventory reversed' }); } catch (e) { next(e); }
 }
-module.exports = { getPurchases, getPurchase, createPurchase, updatePurchase, deletePurchase };
+async function createBatchPurchase(req, res, next) {
+  try {
+    const records = await svc.createBatch(req.body);
+    res.status(201).json({
+      success: true,
+      message: `${records.length} purchase line${records.length > 1 ? 's' : ''} recorded & inventory updated`,
+      data: records,
+    });
+  } catch (e) { next(e); }
+}
+
+module.exports = { getPurchases, getPurchase, createPurchase, updatePurchase, deletePurchase, createBatchPurchase };

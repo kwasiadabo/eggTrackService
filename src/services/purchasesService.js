@@ -42,7 +42,12 @@ async function createPurchase({ farmName, eggSize, quantity, costPerTray, purcha
     await transaction.request()
       .input('qty',     sql.Int,          parseInt(quantity))
       .input('eggSize', sql.NVarChar(10), eggSize)
-      .query(`UPDATE Inventory SET quantity = quantity + @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
+      .query(`
+        MERGE Inventory WITH (HOLDLOCK) AS t
+        USING (VALUES (@eggSize, @qty)) AS s(eggSize, qty) ON t.eggSize = s.eggSize
+        WHEN MATCHED     THEN UPDATE SET quantity = t.quantity + s.qty, updatedAt = GETDATE()
+        WHEN NOT MATCHED THEN INSERT (eggSize, quantity) VALUES (s.eggSize, s.qty);
+      `);
     await transaction.commit();
     return r.recordset[0];
   } catch (err) { await transaction.rollback(); throw err; }
@@ -119,4 +124,43 @@ async function deletePurchase(id, deletedBy) {
   } catch (err) { await transaction.rollback(); throw err; }
 }
 
-module.exports = { getAllPurchases, getPurchaseById, createPurchase, updatePurchase, deletePurchase };
+// Create multiple purchase line-items from one farm in a single transaction
+async function createBatch({ farmName, purchaseDate, notes, items }) {
+  if (!items || items.length === 0) {
+    const e = new Error('Batch must have at least one line item'); e.statusCode = 400; throw e;
+  }
+  const pool = await getPool();
+  const transaction = new sql.Transaction(pool);
+  const inserted = [];
+  try {
+    await transaction.begin();
+    for (const item of items) {
+      const r = await transaction.request()
+        .input('farmName',    sql.NVarChar(150), farmName)
+        .input('eggSize',     sql.NVarChar(10),  item.eggSize)
+        .input('quantity',    sql.Int,            parseInt(item.quantity))
+        .input('costPerTray', sql.Decimal(10, 2), parseFloat(item.costPerTray))
+        .input('purchaseDate',sql.Date,           purchaseDate || new Date())
+        .input('notes',       sql.NVarChar(500),  notes || null)
+        .query(`
+          INSERT INTO EggsPurchases (farmName, eggSize, quantity, costPerTray, purchaseDate, notes)
+          OUTPUT INSERTED.*
+          VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes)
+        `);
+      await transaction.request()
+        .input('qty',     sql.Int,          parseInt(item.quantity))
+        .input('eggSize', sql.NVarChar(10), item.eggSize)
+        .query(`
+          MERGE Inventory WITH (HOLDLOCK) AS t
+          USING (VALUES (@eggSize, @qty)) AS s(eggSize, qty) ON t.eggSize = s.eggSize
+          WHEN MATCHED     THEN UPDATE SET quantity = t.quantity + s.qty, updatedAt = GETDATE()
+          WHEN NOT MATCHED THEN INSERT (eggSize, quantity) VALUES (s.eggSize, s.qty);
+        `);
+      inserted.push(r.recordset[0]);
+    }
+    await transaction.commit();
+    return inserted;
+  } catch (err) { await transaction.rollback(); throw err; }
+}
+
+module.exports = { getAllPurchases, getPurchaseById, createPurchase, updatePurchase, deletePurchase, createBatch };
