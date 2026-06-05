@@ -1,11 +1,13 @@
 const app        = require('./app');
 const { getPool, closePool } = require('./config/database');
+const { registerDebtorsJob } = require('./jobs/debtorsMailer');
 
 const PORT = process.env.PORT || 5000;
 
 async function start() {
   try {
     await getPool(); // verify DB connection on startup
+    registerDebtorsJob();
     const server = app.listen(PORT, () => {
       console.log('');
       console.log('🥚  EggTrack API is running!');

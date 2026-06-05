@@ -1,14 +1,19 @@
 const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 const { validate } = require('../middleware');
-const { requireViewer, requireManager, requireAdmin } = require('../middleware/auth');
+const {
+	requireViewer,
+	requireManager,
+	requireAdmin,
+} = require('../middleware/auth');
 
 const purchasesCtrl = require('../controllers/purchasesController');
 const inventoryCtrl = require('../controllers/inventoryController');
-const salesCtrl     = require('../controllers/salesController');
+const salesCtrl = require('../controllers/salesController');
 const customersCtrl = require('../controllers/customersController');
-const paymentsCtrl  = require('../controllers/paymentsController');
-const expensesCtrl  = require('../controllers/expensesController');
+const reportingCtrl = require('../controllers/customersController');
+const paymentsCtrl = require('../controllers/paymentsController');
+const expensesCtrl = require('../controllers/expensesController');
 const dashboardCtrl = require('../controllers/dashboardController');
 
 const EGG_SIZES = ['small', 'medium', 'large'];
@@ -126,10 +131,16 @@ router.get('/purchases/:id', ...requireViewer, purchasesCtrl.getPurchase);
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/purchases',
-  ...requireManager,
-  validate({ farmName: { required: true }, eggSize: { required: true, enum: EGG_SIZES }, quantity: { required: true, type: 'number', min: 1 }, costPerTray: { required: true, type: 'number', min: 0.01 } }),
-  purchasesCtrl.createPurchase
+router.post(
+	'/purchases',
+	...requireManager,
+	validate({
+		farmName: { required: true },
+		eggSize: { required: true, enum: EGG_SIZES },
+		quantity: { required: true, type: 'number', min: 1 },
+		costPerTray: { required: true, type: 'number', min: 0.01 },
+	}),
+	purchasesCtrl.createPurchase,
 );
 
 /**
@@ -238,10 +249,16 @@ router.get('/sales/:id', ...requireViewer, salesCtrl.getSale);
  *       400: { description: Validation error or insufficient stock }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/sales',
-  ...requireManager,
-  validate({ customerId: { required: true, type: 'number', min: 1 }, eggSize: { required: true, enum: EGG_SIZES }, quantity: { required: true, type: 'number', min: 1 }, unitPrice: { required: true, type: 'number', min: 0.01 } }),
-  salesCtrl.createSale
+router.post(
+	'/sales',
+	...requireManager,
+	validate({
+		customerId: { required: true, type: 'number', min: 1 },
+		eggSize: { required: true, enum: EGG_SIZES },
+		quantity: { required: true, type: 'number', min: 1 },
+		unitPrice: { required: true, type: 'number', min: 0.01 },
+	}),
+	salesCtrl.createSale,
 );
 
 /**
@@ -346,7 +363,12 @@ router.get('/customers/:id', ...requireViewer, customersCtrl.getCustomer);
  *       201: { description: Customer created }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/customers', ...requireManager, validate({ name: { required: true } }), customersCtrl.createCustomer);
+router.post(
+	'/customers',
+	...requireManager,
+	validate({ name: { required: true } }),
+	customersCtrl.createCustomer,
+);
 
 /**
  * @openapi
@@ -430,10 +452,14 @@ router.get('/payments', ...requireViewer, paymentsCtrl.getAllPayments);
  *       201: { description: Payment recorded }
  *       400: { $ref: '#/components/responses/BadRequest' }
  */
-router.post('/payments',
-  ...requireManager,
-  validate({ customerId: { required: true, type: 'number', min: 1 }, amount: { required: true, type: 'number', min: 0.01 } }),
-  paymentsCtrl.createPayment
+router.post(
+	'/payments',
+	...requireManager,
+	validate({
+		customerId: { required: true, type: 'number', min: 1 },
+		amount: { required: true, type: 'number', min: 0.01 },
+	}),
+	paymentsCtrl.createPayment,
 );
 
 /**
@@ -490,7 +516,11 @@ router.delete('/payments/:id', ...requireAdmin, paymentsCtrl.deletePayment);
  *     responses:
  *       200: { description: Customer payments }
  */
-router.get('/payments/customer/:customerId', ...requireViewer, paymentsCtrl.getPaymentsByCustomer);
+router.get(
+	'/payments/customer/:customerId',
+	...requireViewer,
+	paymentsCtrl.getPaymentsByCustomer,
+);
 
 // ════════════════════════════════════════════════════════════
 //  DEBTORS
@@ -551,7 +581,11 @@ router.get('/expenses', ...requireViewer, expensesCtrl.getExpenses);
  *     responses:
  *       200: { description: Category summary }
  */
-router.get('/expenses/summary', ...requireViewer, expensesCtrl.getExpenseSummary);
+router.get(
+	'/expenses/summary',
+	...requireViewer,
+	expensesCtrl.getExpenseSummary,
+);
 
 /**
  * @openapi
@@ -587,10 +621,15 @@ router.get('/expenses/:id', ...requireViewer, expensesCtrl.getExpense);
  *       201: { description: Expense recorded }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/expenses',
-  ...requireManager,
-  validate({ category: { required: true }, description: { required: true }, amount: { required: true, type: 'number', min: 0.01 } }),
-  expensesCtrl.createExpense
+router.post(
+	'/expenses',
+	...requireManager,
+	validate({
+		category: { required: true },
+		description: { required: true },
+		amount: { required: true, type: 'number', min: 0.01 },
+	}),
+	expensesCtrl.createExpense,
 );
 
 /**
@@ -631,5 +670,82 @@ router.put('/expenses/:id', ...requireManager, expensesCtrl.updateExpense);
  *       200: { description: Expense deleted }
  */
 router.delete('/expenses/:id', ...requireAdmin, expensesCtrl.deleteExpense);
+
+/**
+ * @openapi
+ * /api/customerstatement:
+ *   get:
+ *     summary: Get customer statement ledger, summary, or overdue report
+ *     tags: [Customers]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: customerId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *         description: Customer ID. Omit to retrieve statements for all customers.
+ *
+ *       - in: query
+ *         name: dateFrom
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Start date for the statement period (YYYY-MM-DD).
+ *
+ *       - in: query
+ *         name: dateTo
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: End date for the statement period (YYYY-MM-DD).
+ *
+ *       - in: query
+ *         name: includeOpeningBalance
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: true
+ *         description: Include opening balance brought forward before the statement period.
+ *
+ *       - in: query
+ *         name: mode
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           enum: [1, 2, 3]
+ *           default: 1
+ *         description: |
+ *           Report mode:
+ *           1 = Detailed Ledger
+ *           2 = Customer Summary
+ *           3 = Overdue Customers Only
+ *
+ *       - in: query
+ *         name: overdueDays
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 30
+ *         description: Number of days after which a customer is considered overdue.
+ *
+ *     responses:
+ *       200:
+ *         description: Customer statement generated successfully
+ *       400:
+ *         description: Invalid request parameters
+ *       404:
+ *         description: Customer not found
+ *       500:
+ *         description: Internal server error
+ */
+router.get(
+	'/customerstatement',
+	...requireManager,
+	reportingCtrl.getCustomerStatement,
+);
 
 module.exports = router;
