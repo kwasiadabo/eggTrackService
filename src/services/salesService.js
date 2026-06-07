@@ -1,4 +1,5 @@
 const { getPool, sql } = require('../config/database');
+const bankService = require('./bankService');
 
 async function getAllSales() {
   const pool = await getPool();
@@ -27,7 +28,7 @@ async function getSaleById(id) {
   return row;
 }
 
-async function createSale({ customerId, eggSize, quantity, unitPrice, saleDate, notes }) {
+async function createSale({ customerId, eggSize, quantity, unitPrice, saleDate, notes, bankAccountId }, userId) {
   const pool = await getPool();
   const stock = await pool.request()
     .input('eggSize', sql.NVarChar(10), eggSize)
@@ -60,7 +61,18 @@ async function createSale({ customerId, eggSize, quantity, unitPrice, saleDate, 
     const sale = r.recordset[0];
     const full = await pool.request().input('id', sql.Int, sale.id)
       .query('SELECT s.*, c.name AS customerName, c.phone, c.address FROM Sales s JOIN Customers c ON c.id = s.customerId WHERE s.id = @id');
-    return full.recordset[0];
+    const saleRow = full.recordset[0];
+    if (bankAccountId && userId) {
+      const depositAmt = parseInt(quantity) * parseFloat(unitPrice);
+      await bankService.createDeposit({
+        bankAccountId,
+        amount: depositAmt,
+        description: `Sale deposit — ${saleRow.customerName}`,
+        reference: `SALE-${saleRow.id}`,
+        transactionDate: saleDate || new Date(),
+      }, userId);
+    }
+    return saleRow;
   } catch (err) { await transaction.rollback(); throw err; }
 }
 
@@ -141,7 +153,7 @@ function generateInvoiceNo(date) {
   return `INV-${ymd}-${String(Math.floor(1000 + Math.random() * 9000))}`;
 }
 
-async function createInvoice({ customerId, saleDate, notes, items }) {
+async function createInvoice({ customerId, saleDate, notes, items, bankAccountId }, userId) {
   if (!items || items.length === 0) {
     const e = new Error('Invoice must have at least one line item'); e.statusCode = 400; throw e;
   }
@@ -199,6 +211,16 @@ async function createInvoice({ customerId, saleDate, notes, items }) {
       ORDER BY s.id
     `);
     const rows = full.recordset;
+    if (bankAccountId && userId) {
+      const totalAmt = items.reduce((s, i) => s + parseInt(i.quantity) * parseFloat(i.unitPrice), 0);
+      await bankService.createDeposit({
+        bankAccountId,
+        amount: totalAmt,
+        description: `Invoice deposit — ${rows[0].customerName}`,
+        reference: invoiceNo,
+        transactionDate: saleDate || new Date(),
+      }, userId);
+    }
     return {
       invoiceNo,
       sales: rows,

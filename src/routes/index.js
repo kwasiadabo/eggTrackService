@@ -18,6 +18,7 @@ const reportRecipientsCtrl   = require('../controllers/reportRecipientsControlle
 const emailLogsCtrl          = require('../controllers/emailLogsController');
 const emailScheduleCtrl      = require('../controllers/emailScheduleController');
 const farmsCtrl              = require('../controllers/farmsController');
+const bankCtrl               = require('../controllers/bankController');
 
 const EGG_SIZES = ['small', 'medium', 'large'];
 
@@ -883,5 +884,300 @@ router.post('/farms',
 );
 router.put('/farms/:id',    ...requireAdmin, farmsCtrl.updateFarm);
 router.delete('/farms/:id', ...requireAdmin, farmsCtrl.deleteFarm);
+
+// ════════════════════════════════════════════════════════════
+//  BANK ACCOUNTS  (admin manages; manager+ reads)
+// ════════════════════════════════════════════════════════════
+
+/**
+ * @openapi
+ * /api/bank-accounts:
+ *   get:
+ *     summary: List bank accounts (manager+)
+ *     description: Returns active accounts. Admin callers also see inactive accounts. Balance is computed dynamically from approved transactions.
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Bank accounts list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:            { type: integer }
+ *                       bankName:      { type: string }
+ *                       accountName:   { type: string }
+ *                       accountNumber: { type: string }
+ *                       branch:        { type: string, nullable: true }
+ *                       isActive:      { type: boolean }
+ *                       balance:       { type: number, format: float, description: 'GHS — approved deposits minus approved withdrawals' }
+ *                       createdAt:     { type: string, format: date-time }
+ *                       updatedAt:     { type: string, format: date-time }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.get('/bank-accounts', ...requireManager, bankCtrl.getAccounts);
+
+/**
+ * @openapi
+ * /api/bank-accounts:
+ *   post:
+ *     summary: Create a bank account (admin only)
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [bankName, accountName, accountNumber]
+ *             properties:
+ *               bankName:      { type: string, example: 'GCB Bank' }
+ *               accountName:   { type: string, example: 'Tenderbite Farms Ltd' }
+ *               accountNumber: { type: string, example: '1234567890' }
+ *               branch:        { type: string, example: 'Kumasi Main' }
+ *     responses:
+ *       201: { description: Bank account created }
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.post(
+	'/bank-accounts',
+	...requireAdmin,
+	validate({ bankName: { required: true }, accountName: { required: true }, accountNumber: { required: true } }),
+	bankCtrl.createAccount,
+);
+
+/**
+ * @openapi
+ * /api/bank-accounts/{id}:
+ *   put:
+ *     summary: Update a bank account (admin only)
+ *     description: Any combination of bankName, accountName, accountNumber, branch, and isActive may be patched.
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               bankName:      { type: string }
+ *               accountName:   { type: string }
+ *               accountNumber: { type: string }
+ *               branch:        { type: string }
+ *               isActive:      { type: boolean }
+ *     responses:
+ *       200: { description: Bank account updated }
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { description: Account not found }
+ */
+router.put('/bank-accounts/:id', ...requireAdmin, bankCtrl.updateAccount);
+
+// ════════════════════════════════════════════════════════════
+//  BANK TRANSACTIONS
+// ════════════════════════════════════════════════════════════
+
+/**
+ * @openapi
+ * /api/bank-transactions:
+ *   get:
+ *     summary: List bank transactions (manager+)
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: bankAccountId
+ *         schema: { type: integer }
+ *         description: Filter by account
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [deposit, withdrawal] }
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [pending, approved, rejected] }
+ *       - in: query
+ *         name: fromDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: toDate
+ *         schema: { type: string, format: date }
+ *     responses:
+ *       200:
+ *         description: Transaction list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:              { type: integer }
+ *                       bankAccountId:   { type: integer }
+ *                       bankName:        { type: string }
+ *                       accountName:     { type: string }
+ *                       accountNumber:   { type: string }
+ *                       type:            { type: string, enum: [deposit, withdrawal] }
+ *                       amount:          { type: number }
+ *                       description:     { type: string, nullable: true }
+ *                       reference:       { type: string, nullable: true }
+ *                       status:          { type: string, enum: [pending, approved, rejected] }
+ *                       transactionDate: { type: string, format: date }
+ *                       createdAt:       { type: string, format: date-time }
+ *                       initiatedByName: { type: string }
+ *                       approvedByName:  { type: string, nullable: true }
+ *                       approvedAt:      { type: string, format: date-time, nullable: true }
+ *                       rejectedAt:      { type: string, format: date-time, nullable: true }
+ *                       rejectionNote:   { type: string, nullable: true }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.get('/bank-transactions', ...requireManager, bankCtrl.getTransactions);
+
+/**
+ * @openapi
+ * /api/bank-transactions/deposit:
+ *   post:
+ *     summary: Record a deposit (manager+)
+ *     description: Deposits are auto-approved and immediately increase the account balance.
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [bankAccountId, amount]
+ *             properties:
+ *               bankAccountId:   { type: integer }
+ *               amount:          { type: number, minimum: 0.01, description: 'GHS' }
+ *               description:     { type: string }
+ *               reference:       { type: string }
+ *               transactionDate: { type: string, format: date }
+ *     responses:
+ *       201: { description: Deposit recorded }
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.post(
+	'/bank-transactions/deposit',
+	...requireManager,
+	validate({ bankAccountId: { required: true, type: 'number', min: 1 }, amount: { required: true, type: 'number', min: 0.01 } }),
+	bankCtrl.deposit,
+);
+
+/**
+ * @openapi
+ * /api/bank-transactions/withdrawal:
+ *   post:
+ *     summary: Request or record a withdrawal (manager+)
+ *     description: >
+ *       Manager submissions create a **pending** withdrawal that an admin must approve before it
+ *       affects the balance. Admin submissions are auto-approved immediately.
+ *       Rejected or pending withdrawals do not reduce the balance.
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [bankAccountId, amount]
+ *             properties:
+ *               bankAccountId:   { type: integer }
+ *               amount:          { type: number, minimum: 0.01, description: 'GHS' }
+ *               description:     { type: string }
+ *               reference:       { type: string }
+ *               transactionDate: { type: string, format: date }
+ *     responses:
+ *       201:
+ *         description: Withdrawal recorded (pending or approved depending on caller role)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:  { type: boolean }
+ *                 message:  { type: string }
+ *                 data:     { type: object }
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.post(
+	'/bank-transactions/withdrawal',
+	...requireManager,
+	validate({ bankAccountId: { required: true, type: 'number', min: 1 }, amount: { required: true, type: 'number', min: 0.01 } }),
+	bankCtrl.withdrawal,
+);
+
+/**
+ * @openapi
+ * /api/bank-transactions/{id}/approve:
+ *   put:
+ *     summary: Approve a pending withdrawal (admin only)
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *         description: BankTransaction ID
+ *     responses:
+ *       200: { description: Withdrawal approved }
+ *       400: { description: Not a pending withdrawal }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { description: Transaction not found }
+ */
+router.put('/bank-transactions/:id/approve', ...requireAdmin, bankCtrl.approveWithdrawal);
+
+/**
+ * @openapi
+ * /api/bank-transactions/{id}/reject:
+ *   put:
+ *     summary: Reject a pending withdrawal (admin only)
+ *     tags: [Bank]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *         description: BankTransaction ID
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               rejectionNote: { type: string, description: 'Reason for rejection' }
+ *     responses:
+ *       200: { description: Withdrawal rejected }
+ *       400: { description: Not a pending withdrawal }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { description: Transaction not found }
+ */
+router.put('/bank-transactions/:id/reject', ...requireAdmin, bankCtrl.rejectWithdrawal);
 
 module.exports = router;

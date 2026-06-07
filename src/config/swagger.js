@@ -50,6 +50,7 @@ Full REST API with **JWT authentication**, **role-based authorisation**, and com
       { name: 'Payments',  description: 'Payment records — full CRUD' },
       { name: 'Debtors',   description: 'Outstanding balance tracking' },
       { name: 'Expenses',  description: 'Operational costs — full CRUD' },
+      { name: 'Bank',      description: 'Bank accounts and cash transactions (deposits, withdrawals, approvals)' },
     ],
     components: {
       securitySchemes: {

@@ -38,9 +38,9 @@ async function register({ name, email, password, roleId = 3 }) {
 		.input('email', sql.NVarChar(150), email)
 		.input('passwordHash', sql.NVarChar(255), passwordHash)
 		.input('roleId', sql.Int, parseInt(roleId)).query(`
-      INSERT INTO Users (name, email, passwordHash, roleId)
+      INSERT INTO Users (name, email, passwordHash, roleId, mustChangePassword)
       OUTPUT INSERTED.id, INSERTED.name, INSERTED.email, INSERTED.roleId, INSERTED.createdAt
-      VALUES (@name, @email, @passwordHash, @roleId)
+      VALUES (@name, @email, @passwordHash, @roleId, 1)
     `);
 	return result.recordset[0];
 }
@@ -52,7 +52,7 @@ async function login({ email, password }) {
 	const result = await pool.request().input('email', sql.NVarChar(150), email)
 		.query(`
       SELECT u.id, u.name, u.email, u.passwordHash, u.isActive, u.roleId,
-             r.name AS role
+             u.mustChangePassword, r.name AS role
       FROM Users u
       JOIN Roles r ON r.id = u.roleId
       WHERE u.email = @email
@@ -109,7 +109,13 @@ async function login({ email, password }) {
 	return {
 		accessToken,
 		refreshToken,
-		user: { id: user.id, name: user.name, email: user.email, role: user.role },
+		user: {
+			id: user.id,
+			name: user.name,
+			email: user.email,
+			role: user.role,
+			mustChangePassword: !!user.mustChangePassword,
+		},
 	};
 }
 
@@ -194,7 +200,7 @@ async function getMe(userId) {
 	const pool = await getPool();
 	const result = await pool.request().input('id', sql.Int, userId).query(`
       SELECT u.id, u.name, u.email, u.isActive, u.lastLoginAt, u.createdAt,
-             r.name AS role, r.description AS roleDescription
+             u.mustChangePassword, r.name AS role, r.description AS roleDescription
       FROM Users u JOIN Roles r ON r.id = u.roleId
       WHERE u.id = @id
     `);
@@ -274,7 +280,7 @@ async function changePassword(userId, { currentPassword, newPassword }) {
 		.input('id', sql.Int, userId)
 		.input('hash', sql.NVarChar(255), hash)
 		.query(
-			'UPDATE Users SET passwordHash = @hash, updatedAt = GETDATE() WHERE id = @id',
+			'UPDATE Users SET passwordHash = @hash, mustChangePassword = 0, updatedAt = GETDATE() WHERE id = @id',
 		);
 }
 

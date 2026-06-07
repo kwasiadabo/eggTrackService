@@ -117,7 +117,7 @@ async function getSale(req, res, next) {
 }
 async function createSale(req, res, next) {
   try {
-    const sale = await svc.createSale(req.body);
+    const sale = await svc.createSale(req.body, req.user.sub);
     res.status(201).json({
       success: true,
       message: 'Sale recorded and inventory updated',
@@ -140,7 +140,7 @@ async function getSaleInvoice(req, res, next) {
 }
 async function createInvoice(req, res, next) {
   try {
-    const result = await svc.createInvoice(req.body);
+    const result = await svc.createInvoice(req.body, req.user.sub);
     res.status(201).json({ success: true, message: 'Invoice created', data: result });
   } catch (e) { next(e); }
 }
