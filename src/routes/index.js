@@ -7,18 +7,18 @@ const {
 	requireAdmin,
 } = require('../middleware/auth');
 
-const purchasesCtrl          = require('../controllers/purchasesController');
-const inventoryCtrl          = require('../controllers/inventoryController');
-const salesCtrl              = require('../controllers/salesController');
-const customersCtrl          = require('../controllers/customersController');
-const paymentsCtrl           = require('../controllers/paymentsController');
-const expensesCtrl           = require('../controllers/expensesController');
-const dashboardCtrl          = require('../controllers/dashboardController');
-const reportRecipientsCtrl   = require('../controllers/reportRecipientsController');
-const emailLogsCtrl          = require('../controllers/emailLogsController');
-const emailScheduleCtrl      = require('../controllers/emailScheduleController');
-const farmsCtrl              = require('../controllers/farmsController');
-const bankCtrl               = require('../controllers/bankController');
+const purchasesCtrl = require('../controllers/purchasesController');
+const inventoryCtrl = require('../controllers/inventoryController');
+const salesCtrl = require('../controllers/salesController');
+const customersCtrl = require('../controllers/customersController');
+const paymentsCtrl = require('../controllers/paymentsController');
+const expensesCtrl = require('../controllers/expensesController');
+const dashboardCtrl = require('../controllers/dashboardController');
+const reportRecipientsCtrl = require('../controllers/reportRecipientsController');
+const emailLogsCtrl = require('../controllers/emailLogsController');
+const emailScheduleCtrl = require('../controllers/emailScheduleController');
+const farmsCtrl = require('../controllers/farmsController');
+const bankCtrl = require('../controllers/bankController');
 
 const EGG_SIZES = ['small', 'medium', 'large'];
 
@@ -93,7 +93,11 @@ router.get('/inventory', ...requireViewer, inventoryCtrl.getInventory);
  *                 data: { type: array, items: { $ref: '#/components/schemas/InventoryItem' } }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/inventory/reconcile', ...requireAdmin, inventoryCtrl.reconcileInventory);
+router.post(
+	'/inventory/reconcile',
+	...requireAdmin,
+	inventoryCtrl.reconcileInventory,
+);
 
 // ════════════════════════════════════════════════════════════
 //  PURCHASES  (viewer=GET, manager=POST/PUT, admin=DELETE)
@@ -121,7 +125,11 @@ router.post('/inventory/reconcile', ...requireAdmin, inventoryCtrl.reconcileInve
 router.get('/purchases', ...requireViewer, purchasesCtrl.getPurchases);
 
 // Batch create — must be before /purchases/:id to avoid param clash
-router.post('/purchases/batch', ...requireManager, purchasesCtrl.createBatchPurchase);
+router.post(
+	'/purchases/batch',
+	...requireManager,
+	purchasesCtrl.createBatchPurchase,
+);
 
 /**
  * @openapi
@@ -759,7 +767,11 @@ router.delete('/expenses/:id', ...requireAdmin, expensesCtrl.deleteExpense);
  *                       isActive:  { type: boolean }
  *                       createdAt: { type: string, format: date-time }
  */
-router.get('/report-recipients', ...requireViewer, reportRecipientsCtrl.getRecipients);
+router.get(
+	'/report-recipients',
+	...requireViewer,
+	reportRecipientsCtrl.getRecipients,
+);
 
 /**
  * @openapi
@@ -805,7 +817,11 @@ router.post(
  *       200: { description: Recipient updated }
  *       404: { description: Not found }
  */
-router.put('/report-recipients/:id', ...requireManager, reportRecipientsCtrl.updateRecipient);
+router.put(
+	'/report-recipients/:id',
+	...requireManager,
+	reportRecipientsCtrl.updateRecipient,
+);
 
 /**
  * @openapi
@@ -823,7 +839,11 @@ router.put('/report-recipients/:id', ...requireManager, reportRecipientsCtrl.upd
  *       200: { description: Recipient removed }
  *       404: { description: Not found }
  */
-router.delete('/report-recipients/:id', ...requireAdmin, reportRecipientsCtrl.deleteRecipient);
+router.delete(
+	'/report-recipients/:id',
+	...requireAdmin,
+	reportRecipientsCtrl.deleteRecipient,
+);
 
 // ════════════════════════════════════════════════════════════
 //  EMAIL LOGS
@@ -872,17 +892,22 @@ router.get('/email-logs', ...requireViewer, emailLogsCtrl.getEmailLogs);
 
 // ── Email schedule (admin only) ───────────────────────────────────────────────
 router.get('/email-schedule', ...requireAdmin, emailScheduleCtrl.getSchedule);
-router.put('/email-schedule', ...requireAdmin, emailScheduleCtrl.updateSchedule);
+router.put(
+	'/email-schedule',
+	...requireAdmin,
+	emailScheduleCtrl.updateSchedule,
+);
 
 // ── Farms ─────────────────────────────────────────────────────────────────────
 router.get('/farms/active', ...requireViewer, farmsCtrl.getActiveFarms); // for purchase dropdown
-router.get('/farms',        ...requireAdmin,  farmsCtrl.getFarms);       // full list with inactive
-router.post('/farms',
-  ...requireAdmin,
-  validate({ name: { required: true } }),
-  farmsCtrl.createFarm
+router.get('/farms', ...requireViewer, farmsCtrl.getFarms); // full list with inactive
+router.post(
+	'/farms',
+	...requireViewer,
+	validate({ name: { required: true } }),
+	farmsCtrl.createFarm,
 );
-router.put('/farms/:id',    ...requireAdmin, farmsCtrl.updateFarm);
+router.put('/farms/:id', ...requireAdmin, farmsCtrl.updateFarm);
 router.delete('/farms/:id', ...requireAdmin, farmsCtrl.deleteFarm);
 
 // ════════════════════════════════════════════════════════════
@@ -952,7 +977,11 @@ router.get('/bank-accounts', ...requireManager, bankCtrl.getAccounts);
 router.post(
 	'/bank-accounts',
 	...requireAdmin,
-	validate({ bankName: { required: true }, accountName: { required: true }, accountNumber: { required: true } }),
+	validate({
+		bankName: { required: true },
+		accountName: { required: true },
+		accountNumber: { required: true },
+	}),
 	bankCtrl.createAccount,
 );
 
@@ -1082,7 +1111,10 @@ router.get('/bank-transactions', ...requireManager, bankCtrl.getTransactions);
 router.post(
 	'/bank-transactions/deposit',
 	...requireManager,
-	validate({ bankAccountId: { required: true, type: 'number', min: 1 }, amount: { required: true, type: 'number', min: 0.01 } }),
+	validate({
+		bankAccountId: { required: true, type: 'number', min: 1 },
+		amount: { required: true, type: 'number', min: 0.01 },
+	}),
 	bankCtrl.deposit,
 );
 
@@ -1127,7 +1159,10 @@ router.post(
 router.post(
 	'/bank-transactions/withdrawal',
 	...requireManager,
-	validate({ bankAccountId: { required: true, type: 'number', min: 1 }, amount: { required: true, type: 'number', min: 0.01 } }),
+	validate({
+		bankAccountId: { required: true, type: 'number', min: 1 },
+		amount: { required: true, type: 'number', min: 0.01 },
+	}),
 	bankCtrl.withdrawal,
 );
 
@@ -1150,7 +1185,11 @@ router.post(
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { description: Transaction not found }
  */
-router.put('/bank-transactions/:id/approve', ...requireAdmin, bankCtrl.approveWithdrawal);
+router.put(
+	'/bank-transactions/:id/approve',
+	...requireAdmin,
+	bankCtrl.approveWithdrawal,
+);
 
 /**
  * @openapi
@@ -1178,6 +1217,10 @@ router.put('/bank-transactions/:id/approve', ...requireAdmin, bankCtrl.approveWi
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { description: Transaction not found }
  */
-router.put('/bank-transactions/:id/reject', ...requireAdmin, bankCtrl.rejectWithdrawal);
+router.put(
+	'/bank-transactions/:id/reject',
+	...requireAdmin,
+	bankCtrl.rejectWithdrawal,
+);
 
 module.exports = router;
