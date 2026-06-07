@@ -907,8 +907,8 @@ router.post(
 	validate({ name: { required: true } }),
 	farmsCtrl.createFarm,
 );
-router.put('/farms/:id', ...requireAdmin, farmsCtrl.updateFarm);
-router.delete('/farms/:id', ...requireAdmin, farmsCtrl.deleteFarm);
+router.put('/farms/:id', ...requireViewer, farmsCtrl.updateFarm);
+router.delete('/farms/:id', ...requireViewer, farmsCtrl.deleteFarm);
 
 // ════════════════════════════════════════════════════════════
 //  BANK ACCOUNTS  (admin manages; manager+ reads)
