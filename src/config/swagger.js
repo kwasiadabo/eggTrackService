@@ -63,7 +63,7 @@ Full REST API with **JWT authentication**, **role-based authorisation**, and com
       },
       schemas: {
         // Enums
-        EggSize:       { type: 'string', enum: ['small', 'medium', 'large'], example: 'large' },
+        EggSize:       { type: 'string', enum: ['small', 'medium', 'large', 'xlarge', 'pullet'], example: 'large' },
         PaymentMethod: { type: 'string', enum: ['cash', 'mobile_money', 'bank_transfer', 'cheque'], example: 'mobile_money' },
         UserRole:      { type: 'string', enum: ['admin', 'manager', 'viewer'], example: 'manager' },
 

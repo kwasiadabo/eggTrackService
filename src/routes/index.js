@@ -20,7 +20,7 @@ const emailScheduleCtrl = require('../controllers/emailScheduleController');
 const farmsCtrl = require('../controllers/farmsController');
 const bankCtrl = require('../controllers/bankController');
 
-const EGG_SIZES = ['small', 'medium', 'large'];
+const EGG_SIZES = ['small', 'medium', 'large', 'xlarge', 'pullet'];
 
 // ════════════════════════════════════════════════════════════
 //  DASHBOARD  (viewer+)
@@ -976,7 +976,7 @@ router.get('/bank-accounts', ...requireManager, bankCtrl.getAccounts);
  */
 router.post(
 	'/bank-accounts',
-	...requireAdmin,
+	...requireManager,
 	validate({
 		bankName: { required: true },
 		accountName: { required: true },
