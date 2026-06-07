@@ -5,9 +5,9 @@ async function getDashboardStats() {
 
   const [inventory, sales, payments, expenses] = await Promise.all([
     pool.request().query('SELECT eggSize, quantity FROM Inventory'),
-    pool.request().query('SELECT COALESCE(SUM(totalAmount),0) AS totalRevenue, COUNT(*) AS totalSales FROM Sales'),
-    pool.request().query('SELECT COALESCE(SUM(amount),0) AS totalPaid FROM Payments'),
-    pool.request().query('SELECT COALESCE(SUM(amount),0) AS totalExpenses FROM Expenses'),
+    pool.request().query('SELECT COALESCE(SUM(totalAmount),0) AS totalRevenue, COUNT(*) AS totalSales FROM Sales WHERE deletedAt IS NULL'),
+    pool.request().query('SELECT COALESCE(SUM(amount),0) AS totalPaid FROM Payments WHERE deletedAt IS NULL'),
+    pool.request().query('SELECT COALESCE(SUM(amount),0) AS totalExpenses FROM Expenses WHERE deletedAt IS NULL'),
   ]);
 
   const totalRevenue = sales.recordset[0].totalRevenue;
