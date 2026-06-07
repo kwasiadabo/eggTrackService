@@ -908,7 +908,7 @@ router.post(
 	farmsCtrl.createFarm,
 );
 router.put('/farms/:id', ...requireViewer, farmsCtrl.updateFarm);
-router.delete('/farms/:id', ...requireViewer, farmsCtrl.deleteFarm);
+router.delete('/farms/:id', ...requireAdmin, farmsCtrl.deleteFarm);
 
 // ════════════════════════════════════════════════════════════
 //  BANK ACCOUNTS  (admin manages; manager+ reads)
