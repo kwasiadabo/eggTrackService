@@ -110,6 +110,11 @@ router.post(
  *     summary: List all purchases
  *     tags: [Purchases]
  *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [pending, approved, rejected] }
+ *         description: Filter by approval status
  *     responses:
  *       200:
  *         description: Purchases list
@@ -155,7 +160,11 @@ router.get('/purchases/:id', ...requireViewer, purchasesCtrl.getPurchase);
  * /api/purchases:
  *   post:
  *     summary: Record a purchase (manager+)
- *     description: Saves purchase and increments inventory atomically.
+ *     description: >
+ *       The farm must be on the authorised farms list (Farm Setup → active farms).
+ *       Manager submissions are created as **pending** and do not affect inventory until
+ *       an admin approves them. Admin submissions are auto-approved and increment
+ *       inventory immediately.
  *     tags: [Purchases]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
@@ -225,6 +234,63 @@ router.put('/purchases/:id', ...requireManager, purchasesCtrl.updatePurchase);
  *       404: { description: Not found }
  */
 router.delete('/purchases/:id', ...requireAdmin, purchasesCtrl.deletePurchase);
+
+/**
+ * @openapi
+ * /api/purchases/{id}/approve:
+ *   put:
+ *     summary: Approve a pending purchase (admin only)
+ *     description: Marks the purchase as approved and increments inventory.
+ *     tags: [Purchases]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: Purchase approved }
+ *       400: { description: Not a pending purchase }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { description: Not found }
+ */
+router.put(
+	'/purchases/:id/approve',
+	...requireAdmin,
+	purchasesCtrl.approvePurchase,
+);
+
+/**
+ * @openapi
+ * /api/purchases/{id}/reject:
+ *   put:
+ *     summary: Reject a pending purchase (admin only)
+ *     description: Marks the purchase as rejected. Inventory is not affected.
+ *     tags: [Purchases]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               rejectionNote: { type: string, description: 'Reason for rejection' }
+ *     responses:
+ *       200: { description: Purchase rejected }
+ *       400: { description: Not a pending purchase }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { description: Not found }
+ */
+router.put(
+	'/purchases/:id/reject',
+	...requireAdmin,
+	purchasesCtrl.rejectPurchase,
+);
 
 // ════════════════════════════════════════════════════════════
 //  SALES
