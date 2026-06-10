@@ -162,9 +162,8 @@ router.get('/purchases/:id', ...requireViewer, purchasesCtrl.getPurchase);
  *     summary: Record a purchase (manager+)
  *     description: >
  *       The farm must be on the authorised farms list (Farm Setup → active farms).
- *       Manager submissions are created as **pending** and do not affect inventory until
- *       an admin approves them. Admin submissions are auto-approved and increment
- *       inventory immediately.
+ *       Every purchase is created as **pending** and does not affect inventory until
+ *       an admin approves it via PUT /api/purchases/{id}/approve.
  *     tags: [Purchases]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:

@@ -57,13 +57,11 @@ async function applyInventory(transaction, eggSize, qty) {
     `);
 }
 
-// Managers' purchases are submitted as 'pending' and only update inventory once an
-// admin approves them. Admins' own submissions are auto-approved immediately.
-async function createPurchase({ farmName, eggSize, quantity, costPerTray, purchaseDate, notes }, userId, userRole) {
+// Every purchase is submitted as 'pending' and only updates inventory once an
+// admin approves it — including purchases submitted by an admin.
+async function createPurchase({ farmName, eggSize, quantity, costPerTray, purchaseDate, notes }, userId) {
   const pool = await getPool();
   await assertFarmAuthorised(pool, farmName);
-  const isAdmin = userRole === 'admin';
-  const status = isAdmin ? 'approved' : 'pending';
 
   const transaction = new sql.Transaction(pool);
   try {
@@ -75,18 +73,13 @@ async function createPurchase({ farmName, eggSize, quantity, costPerTray, purcha
       .input('costPerTray',   sql.Decimal(10, 2), parseFloat(costPerTray))
       .input('purchaseDate',  sql.Date,           purchaseDate || new Date())
       .input('notes',         sql.NVarChar(500),  notes || null)
-      .input('status',        sql.NVarChar(20),   status)
       .input('initiatedById', sql.Int,            userId)
       .query(`
         INSERT INTO EggsPurchases
           (farmName, eggSize, quantity, costPerTray, purchaseDate, notes, status, initiatedById, approvedById, approvedAt)
         OUTPUT INSERTED.*
-        VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes, @status, @initiatedById,
-                ${isAdmin ? '@initiatedById, GETDATE()' : 'NULL, NULL'})
+        VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes, 'pending', @initiatedById, NULL, NULL)
       `);
-    if (status === 'approved') {
-      await applyInventory(transaction, eggSize, parseInt(quantity));
-    }
     await transaction.commit();
     return r.recordset[0];
   } catch (err) { await transaction.rollback(); throw err; }
@@ -171,15 +164,14 @@ async function deletePurchase(id, deletedBy) {
   } catch (err) { await transaction.rollback(); throw err; }
 }
 
-// Create multiple purchase line-items from one farm in a single transaction
-async function createBatch({ farmName, purchaseDate, notes, items }, userId, userRole) {
+// Create multiple purchase line-items from one farm in a single transaction.
+// All lines are submitted as 'pending' and only update inventory once an admin approves them.
+async function createBatch({ farmName, purchaseDate, notes, items }, userId) {
   if (!items || items.length === 0) {
     const e = new Error('Batch must have at least one line item'); e.statusCode = 400; throw e;
   }
   const pool = await getPool();
   await assertFarmAuthorised(pool, farmName);
-  const isAdmin = userRole === 'admin';
-  const status = isAdmin ? 'approved' : 'pending';
 
   const transaction = new sql.Transaction(pool);
   const inserted = [];
@@ -193,18 +185,13 @@ async function createBatch({ farmName, purchaseDate, notes, items }, userId, use
         .input('costPerTray',   sql.Decimal(10, 2), parseFloat(item.costPerTray))
         .input('purchaseDate',  sql.Date,           purchaseDate || new Date())
         .input('notes',         sql.NVarChar(500),  notes || null)
-        .input('status',        sql.NVarChar(20),   status)
         .input('initiatedById', sql.Int,            userId)
         .query(`
           INSERT INTO EggsPurchases
             (farmName, eggSize, quantity, costPerTray, purchaseDate, notes, status, initiatedById, approvedById, approvedAt)
           OUTPUT INSERTED.*
-          VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes, @status, @initiatedById,
-                  ${isAdmin ? '@initiatedById, GETDATE()' : 'NULL, NULL'})
+          VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes, 'pending', @initiatedById, NULL, NULL)
         `);
-      if (status === 'approved') {
-        await applyInventory(transaction, item.eggSize, parseInt(item.quantity));
-      }
       inserted.push(r.recordset[0]);
     }
     await transaction.commit();

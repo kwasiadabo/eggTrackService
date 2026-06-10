@@ -8,11 +8,8 @@ async function getPurchase(req, res, next) {
 }
 async function createPurchase(req, res, next) {
   try {
-    const data = await svc.createPurchase(req.body, req.user.sub, req.user.role);
-    const message = data.status === 'pending'
-      ? 'Purchase submitted — awaiting admin approval'
-      : 'Purchase recorded and inventory updated';
-    res.status(201).json({ success: true, message, data });
+    const data = await svc.createPurchase(req.body, req.user.sub);
+    res.status(201).json({ success: true, message: 'Purchase submitted — awaiting admin approval', data });
   } catch (e) { next(e); }
 }
 async function updatePurchase(req, res, next) {
@@ -29,11 +26,8 @@ async function deletePurchase(req, res, next) {
 }
 async function createBatchPurchase(req, res, next) {
   try {
-    const records = await svc.createBatch(req.body, req.user.sub, req.user.role);
-    const pending = records[0]?.status === 'pending';
-    const message = pending
-      ? `${records.length} purchase line${records.length > 1 ? 's' : ''} submitted — awaiting admin approval`
-      : `${records.length} purchase line${records.length > 1 ? 's' : ''} recorded & inventory updated`;
+    const records = await svc.createBatch(req.body, req.user.sub);
+    const message = `${records.length} purchase line${records.length > 1 ? 's' : ''} submitted — awaiting admin approval`;
     res.status(201).json({ success: true, message, data: records });
   } catch (e) { next(e); }
 }
