@@ -3,7 +3,7 @@ const { toNotFoundError } = require('../utils/prismaErrors');
 const { toNumber } = require('../utils/decimal');
 
 function mapTx(row) {
-	// consol.log(row)
+	//console.log(row);
 	return row && { ...row, amount: toNumber(row.amount) };
 }
 
