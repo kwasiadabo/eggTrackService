@@ -3,6 +3,7 @@ const { toNotFoundError } = require('../utils/prismaErrors');
 const { toNumber } = require('../utils/decimal');
 
 function mapTx(row) {
+	// consol.log(row)
 	return row && { ...row, amount: toNumber(row.amount) };
 }
 
@@ -12,8 +13,10 @@ async function getAccountBalance(bankAccountId) {
 		where: { bankAccountId, status: 'approved' },
 		_sum: { amount: true },
 	});
-	const deposits = toNumber(sums.find((s) => s.type === 'deposit')?._sum.amount) ?? 0;
-	const withdrawals = toNumber(sums.find((s) => s.type === 'withdrawal')?._sum.amount) ?? 0;
+	const deposits =
+		toNumber(sums.find((s) => s.type === 'deposit')?._sum.amount) ?? 0;
+	const withdrawals =
+		toNumber(sums.find((s) => s.type === 'withdrawal')?._sum.amount) ?? 0;
 	return deposits - withdrawals;
 }
 
@@ -34,7 +37,10 @@ async function listAccounts(includeInactive = false) {
 
 	const balanceMap = new Map();
 	for (const row of txSums) {
-		const cur = balanceMap.get(row.bankAccountId) || { deposit: 0, withdrawal: 0 };
+		const cur = balanceMap.get(row.bankAccountId) || {
+			deposit: 0,
+			withdrawal: 0,
+		};
 		cur[row.type] = toNumber(row._sum.amount) ?? 0;
 		balanceMap.set(row.bankAccountId, cur);
 	}
@@ -52,7 +58,10 @@ async function createAccount({ bankName, accountName, accountNumber, branch }) {
 	return { ...row, balance: 0 };
 }
 
-async function updateAccount(id, { bankName, accountName, accountNumber, branch, isActive }) {
+async function updateAccount(
+	id,
+	{ bankName, accountName, accountNumber, branch, isActive },
+) {
 	const data = {
 		...(bankName !== undefined && { bankName }),
 		...(accountName !== undefined && { accountName }),
@@ -68,7 +77,10 @@ async function updateAccount(id, { bankName, accountName, accountNumber, branch,
 	data.updatedAt = new Date();
 
 	try {
-		return await prisma.bankAccounts.update({ where: { id: parseInt(id) }, data });
+		return await prisma.bankAccounts.update({
+			where: { id: parseInt(id) },
+			data,
+		});
 	} catch (err) {
 		throw toNotFoundError(err, 'Account not found');
 	}
@@ -76,7 +88,13 @@ async function updateAccount(id, { bankName, accountName, accountNumber, branch,
 
 // ── Transactions ──────────────────────────────────────────────────────────────
 
-async function listTransactions({ bankAccountId, type, status, fromDate, toDate } = {}) {
+async function listTransactions({
+	bankAccountId,
+	type,
+	status,
+	fromDate,
+	toDate,
+} = {}) {
 	const where = {
 		...(bankAccountId && { bankAccountId: parseInt(bankAccountId) }),
 		...(type && { type }),
@@ -92,7 +110,9 @@ async function listTransactions({ bankAccountId, type, status, fromDate, toDate 
 	const rows = await prisma.bankTransactions.findMany({
 		where,
 		include: {
-			bankAccount: { select: { bankName: true, accountName: true, accountNumber: true } },
+			bankAccount: {
+				select: { bankName: true, accountName: true, accountNumber: true },
+			},
 			initiatedBy: { select: { name: true } },
 			approvedBy: { select: { name: true } },
 		},
@@ -122,7 +142,10 @@ async function listTransactions({ bankAccountId, type, status, fromDate, toDate 
 	}));
 }
 
-async function createDeposit({ bankAccountId, amount, description, reference, transactionDate }, userId) {
+async function createDeposit(
+	{ bankAccountId, amount, description, reference, transactionDate },
+	userId,
+) {
 	const row = await prisma.bankTransactions.create({
 		data: {
 			bankAccountId: parseInt(bankAccountId),
@@ -140,10 +163,16 @@ async function createDeposit({ bankAccountId, amount, description, reference, tr
 	return mapTx(row);
 }
 
-async function createWithdrawal({ bankAccountId, amount, description, reference, transactionDate }, userId, userRole) {
+async function createWithdrawal(
+	{ bankAccountId, amount, description, reference, transactionDate },
+	userId,
+	userRole,
+) {
 	const balance = await getAccountBalance(parseInt(bankAccountId));
 	if (parseFloat(amount) > balance) {
-		const e = new Error(`Insufficient balance. Available: GH₵ ${balance.toFixed(2)}`);
+		const e = new Error(
+			`Insufficient balance. Available: GH₵ ${balance.toFixed(2)}`,
+		);
 		e.statusCode = 400;
 		throw e;
 	}
@@ -183,7 +212,12 @@ async function approveWithdrawal(id, adminId) {
 	}
 	const row = await prisma.bankTransactions.update({
 		where: { id: parseInt(id) },
-		data: { status: 'approved', approvedById: adminId, approvedAt: new Date(), updatedAt: new Date() },
+		data: {
+			status: 'approved',
+			approvedById: adminId,
+			approvedAt: new Date(),
+			updatedAt: new Date(),
+		},
 	});
 	return mapTx(row);
 }
@@ -205,7 +239,13 @@ async function rejectWithdrawal(id, adminId, rejectionNote) {
 	}
 	const row = await prisma.bankTransactions.update({
 		where: { id: parseInt(id) },
-		data: { status: 'rejected', approvedById: adminId, rejectedAt: new Date(), rejectionNote: rejectionNote || null, updatedAt: new Date() },
+		data: {
+			status: 'rejected',
+			approvedById: adminId,
+			rejectedAt: new Date(),
+			rejectionNote: rejectionNote || null,
+			updatedAt: new Date(),
+		},
 	});
 	return mapTx(row);
 }
