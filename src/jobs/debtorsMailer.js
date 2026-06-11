@@ -160,6 +160,43 @@ async function sendDebtorsReport() {
 	}
 }
 
+// ─── Manual send (selected recipients) ─────────────────────────
+
+async function sendDebtorsReportTo(recipients) {
+	const debtors = await getDebtors();
+	const generatedAt = new Date().toLocaleString('en-GB', {
+		dateStyle: 'full',
+		timeStyle: 'short',
+	});
+	const subject = `EggTrack Debtors Report — ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+	try {
+		await transporter.sendMail({
+			from: `"EggTrack Reports" <${process.env.EMAIL_USER}>`,
+			to: recipients.join(', '),
+			subject,
+			html: buildEmailHtml(debtors, generatedAt),
+		});
+		await logEmail({
+			jobType: 'debtors_report_manual',
+			recipients,
+			debtorCount: debtors.length,
+			status: 'sent',
+		});
+	} catch (err) {
+		await logEmail({
+			jobType: 'debtors_report_manual',
+			recipients,
+			debtorCount: debtors.length,
+			status: 'failed',
+			errorMessage: err.message,
+		}).catch(() => {});
+		throw err;
+	}
+
+	return { recipients, debtorCount: debtors.length };
+}
+
 // ─── Scheduler (supports live rescheduling without restart) ──────────────────
 let currentTask = null;
 
@@ -194,5 +231,6 @@ function rescheduleDebtorsJob(hour, minute) {
 module.exports = {
 	registerDebtorsJob,
 	sendDebtorsReport,
+	sendDebtorsReportTo,
 	rescheduleDebtorsJob,
 };

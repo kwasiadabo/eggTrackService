@@ -677,6 +677,37 @@ router.get(
  */
 router.get('/debtors', ...requireViewer, paymentsCtrl.getDebtors);
 
+/**
+ * @openapi
+ * /api/debtors/send-report:
+ *   post:
+ *     summary: Manually send the debtors report to selected recipients (manager+)
+ *     description: Sends the debtors report email immediately to the chosen report recipients, regardless of their active/inactive status or the daily schedule.
+ *     tags: [Debtors]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [recipientIds]
+ *             properties:
+ *               recipientIds:
+ *                 type: array
+ *                 items: { type: integer }
+ *                 description: IDs of report recipients to send to
+ *     responses:
+ *       200: { description: Report sent }
+ *       400: { description: No recipients selected }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.post(
+	'/debtors/send-report',
+	...requireManager,
+	paymentsCtrl.sendDebtorsReport,
+);
+
 // ════════════════════════════════════════════════════════════
 //  EXPENSES
 // ════════════════════════════════════════════════════════════
