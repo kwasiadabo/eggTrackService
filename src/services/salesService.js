@@ -1,232 +1,251 @@
-const { getPool, sql } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNumber } = require('../utils/decimal');
 const bankService = require('./bankService');
 
+function mapSaleList(row) {
+	const { customer, ...s } = row;
+	return {
+		id: s.id,
+		customerId: s.customerId,
+		customerName: customer.name,
+		eggSize: s.eggSize,
+		quantity: s.quantity,
+		unitPrice: toNumber(s.unitPrice),
+		totalAmount: toNumber(s.totalAmount),
+		saleDate: s.saleDate,
+		notes: s.notes,
+		invoiceNo: s.invoiceNo,
+		createdAt: s.createdAt,
+		updatedAt: s.updatedAt,
+	};
+}
+
+function mapSaleFull(row) {
+	const { customer, ...s } = row;
+	return {
+		...s,
+		unitPrice: toNumber(s.unitPrice),
+		totalAmount: toNumber(s.totalAmount),
+		customerName: customer.name,
+		phone: customer.phone,
+		address: customer.address,
+	};
+}
+
 async function getAllSales() {
-  const pool = await getPool();
-  const result = await pool.request().query(`
-    SELECT s.id, s.customerId, c.name AS customerName,
-           s.eggSize, s.quantity, s.unitPrice, s.totalAmount,
-           s.saleDate, s.notes, s.invoiceNo, s.createdAt, s.updatedAt
-    FROM Sales s JOIN Customers c ON c.id = s.customerId
-    WHERE s.deletedAt IS NULL
-    ORDER BY s.saleDate DESC, s.createdAt DESC
-  `);
-  return result.recordset;
+	const rows = await prisma.sales.findMany({
+		include: { customer: { select: { name: true } } },
+		orderBy: [{ saleDate: 'desc' }, { createdAt: 'desc' }],
+	});
+	return rows.map(mapSaleList);
 }
 
 async function getSaleById(id) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('id', sql.Int, parseInt(id))
-    .query(`
-      SELECT s.*, c.name AS customerName, c.phone, c.address
-      FROM Sales s JOIN Customers c ON c.id = s.customerId
-      WHERE s.id = @id AND s.deletedAt IS NULL
-    `);
-  const row = result.recordset[0];
-  if (!row) { const e = new Error('Sale not found'); e.statusCode = 404; throw e; }
-  return row;
+	const row = await prisma.sales.findFirst({
+		where: { id: parseInt(id) },
+		include: { customer: { select: { name: true, phone: true, address: true } } },
+	});
+	if (!row) {
+		const e = new Error('Sale not found');
+		e.statusCode = 404;
+		throw e;
+	}
+	return mapSaleFull(row);
 }
 
 async function createSale({ customerId, eggSize, quantity, unitPrice, saleDate, notes, bankAccountId }, userId) {
-  const pool = await getPool();
-  const stock = await pool.request()
-    .input('eggSize', sql.NVarChar(10), eggSize)
-    .query('SELECT quantity FROM Inventory WHERE eggSize = @eggSize');
-  const available = stock.recordset[0]?.quantity || 0;
-  if (available < parseInt(quantity)) {
-    const e = new Error(`Insufficient stock. Available: ${available} trays of ${eggSize} eggs`);
-    e.statusCode = 400; throw e;
-  }
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    const r = await transaction.request()
-      .input('customerId', sql.Int,           parseInt(customerId))
-      .input('eggSize',    sql.NVarChar(10),  eggSize)
-      .input('quantity',   sql.Int,           parseInt(quantity))
-      .input('unitPrice',  sql.Decimal(10,2), parseFloat(unitPrice))
-      .input('saleDate',   sql.Date,          saleDate || new Date())
-      .input('notes',      sql.NVarChar(500), notes || null)
-      .query(`
-        INSERT INTO Sales (customerId, eggSize, quantity, unitPrice, saleDate, notes)
-        OUTPUT INSERTED.*
-        VALUES (@customerId, @eggSize, @quantity, @unitPrice, @saleDate, @notes)
-      `);
-    await transaction.request()
-      .input('qty',     sql.Int,          parseInt(quantity))
-      .input('eggSize', sql.NVarChar(10), eggSize)
-      .query(`UPDATE Inventory SET quantity = quantity - @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
-    await transaction.commit();
-    const sale = r.recordset[0];
-    const full = await pool.request().input('id', sql.Int, sale.id)
-      .query('SELECT s.*, c.name AS customerName, c.phone, c.address FROM Sales s JOIN Customers c ON c.id = s.customerId WHERE s.id = @id');
-    const saleRow = full.recordset[0];
-    if (bankAccountId && userId) {
-      const depositAmt = parseInt(quantity) * parseFloat(unitPrice);
-      await bankService.createDeposit({
-        bankAccountId,
-        amount: depositAmt,
-        description: `Sale deposit — ${saleRow.customerName}`,
-        reference: `SALE-${saleRow.id}`,
-        transactionDate: saleDate || new Date(),
-      }, userId);
-    }
-    return saleRow;
-  } catch (err) { await transaction.rollback(); throw err; }
+	const qty = parseInt(quantity);
+
+	const saleRow = await prisma.$transaction(async (tx) => {
+		const stock = await tx.inventory.findFirst({ where: { eggSize } });
+		const available = stock?.quantity || 0;
+		if (available < qty) {
+			const e = new Error(`Insufficient stock. Available: ${available} trays of ${eggSize} eggs`);
+			e.statusCode = 400;
+			throw e;
+		}
+
+		const sale = await tx.sales.create({
+			data: {
+				customerId: parseInt(customerId),
+				eggSize,
+				quantity: qty,
+				unitPrice: parseFloat(unitPrice),
+				saleDate: saleDate ? new Date(saleDate) : new Date(),
+				notes: notes || null,
+			},
+		});
+
+		await tx.inventory.updateMany({
+			where: { eggSize },
+			data: { quantity: { decrement: qty }, updatedAt: new Date() },
+		});
+
+		const full = await tx.sales.findFirst({
+			where: { id: sale.id },
+			include: { customer: { select: { name: true, phone: true, address: true } } },
+		});
+		return mapSaleFull(full);
+	});
+
+	if (bankAccountId && userId) {
+		const depositAmt = qty * parseFloat(unitPrice);
+		await bankService.createDeposit({
+			bankAccountId,
+			amount: depositAmt,
+			description: `Sale deposit — ${saleRow.customerName}`,
+			reference: `SALE-${saleRow.id}`,
+			transactionDate: saleDate || new Date(),
+		}, userId);
+	}
+	return saleRow;
 }
 
 async function updateSale(id, { customerId, eggSize, quantity, unitPrice, saleDate, notes }) {
-  const pool = await getPool();
-  const orig = await getSaleById(id);
-  const newQty  = quantity   != null ? parseInt(quantity)        : orig.quantity;
-  const newSize = eggSize    ?? orig.eggSize;
-  const qtyDiff = newQty - (newSize === orig.eggSize ? orig.quantity : 0);
+	const orig = await getSaleById(id);
+	const newQty = quantity != null ? parseInt(quantity) : orig.quantity;
+	const newSize = eggSize ?? orig.eggSize;
 
-  // If size or qty changed, validate stock
-  if (newSize !== orig.eggSize || newQty !== orig.quantity) {
-    const stock = await pool.request()
-      .input('eggSize', sql.NVarChar(10), newSize)
-      .query('SELECT quantity FROM Inventory WHERE eggSize = @eggSize');
-    const available = (stock.recordset[0]?.quantity || 0) + (newSize === orig.eggSize ? orig.quantity : 0);
-    if (available < newQty) {
-      const e = new Error(`Insufficient stock. Available: ${available} trays of ${newSize} eggs`); e.statusCode = 400; throw e;
-    }
-  }
+	// If size or qty changed, validate stock
+	if (newSize !== orig.eggSize || newQty !== orig.quantity) {
+		const stock = await prisma.inventory.findFirst({ where: { eggSize: newSize } });
+		const available = (stock?.quantity || 0) + (newSize === orig.eggSize ? orig.quantity : 0);
+		if (available < newQty) {
+			const e = new Error(`Insufficient stock. Available: ${available} trays of ${newSize} eggs`);
+			e.statusCode = 400;
+			throw e;
+		}
+	}
 
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    const r = await transaction.request()
-      .input('id',         sql.Int,           parseInt(id))
-      .input('customerId', sql.Int,           customerId != null ? parseInt(customerId) : orig.customerId)
-      .input('eggSize',    sql.NVarChar(10),  newSize)
-      .input('quantity',   sql.Int,           newQty)
-      .input('unitPrice',  sql.Decimal(10,2), unitPrice  != null ? parseFloat(unitPrice) : orig.unitPrice)
-      .input('saleDate',   sql.Date,          saleDate   ?? orig.saleDate)
-      .input('notes',      sql.NVarChar(500), notes      !== undefined ? notes : orig.notes)
-      .query(`
-        UPDATE Sales SET customerId=@customerId, eggSize=@eggSize, quantity=@quantity,
-          unitPrice=@unitPrice, saleDate=@saleDate, notes=@notes, updatedAt=GETDATE()
-        OUTPUT INSERTED.*
-        WHERE id=@id AND deletedAt IS NULL
-      `);
+	return prisma.$transaction(async (tx) => {
+		const updated = await tx.sales.update({
+			where: { id: parseInt(id) },
+			data: {
+				customerId: customerId != null ? parseInt(customerId) : orig.customerId,
+				eggSize: newSize,
+				quantity: newQty,
+				unitPrice: unitPrice != null ? parseFloat(unitPrice) : orig.unitPrice,
+				saleDate: saleDate != null ? new Date(saleDate) : orig.saleDate,
+				notes: notes !== undefined ? notes : orig.notes,
+				updatedAt: new Date(),
+			},
+		});
 
-    // Reconcile inventory
-    if (newSize === orig.eggSize) {
-      const diff = newQty - orig.quantity;
-      if (diff !== 0) await transaction.request()
-        .input('diff', sql.Int, -diff).input('eggSize', sql.NVarChar(10), newSize)
-        .query(`UPDATE Inventory SET quantity=quantity+@diff, updatedAt=GETDATE() WHERE eggSize=@eggSize`);
-    } else {
-      await transaction.request().input('qty', sql.Int, orig.quantity).input('eggSize', sql.NVarChar(10), orig.eggSize)
-        .query(`UPDATE Inventory SET quantity=quantity+@qty, updatedAt=GETDATE() WHERE eggSize=@eggSize`);
-      await transaction.request().input('qty', sql.Int, newQty).input('eggSize', sql.NVarChar(10), newSize)
-        .query(`UPDATE Inventory SET quantity=quantity-@qty, updatedAt=GETDATE() WHERE eggSize=@eggSize`);
-    }
-    await transaction.commit();
-    return r.recordset[0];
-  } catch (err) { await transaction.rollback(); throw err; }
+		// Reconcile inventory
+		if (newSize === orig.eggSize) {
+			const diff = newQty - orig.quantity;
+			if (diff !== 0) {
+				await tx.inventory.updateMany({
+					where: { eggSize: newSize },
+					data: { quantity: { decrement: diff }, updatedAt: new Date() },
+				});
+			}
+		} else {
+			await tx.inventory.updateMany({
+				where: { eggSize: orig.eggSize },
+				data: { quantity: { increment: orig.quantity }, updatedAt: new Date() },
+			});
+			await tx.inventory.updateMany({
+				where: { eggSize: newSize },
+				data: { quantity: { decrement: newQty }, updatedAt: new Date() },
+			});
+		}
+
+		return { ...updated, unitPrice: toNumber(updated.unitPrice), totalAmount: toNumber(updated.totalAmount) };
+	});
 }
 
 async function deleteSale(id, deletedBy) {
-  const pool = await getPool();
-  const orig = await getSaleById(id);
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    await transaction.request()
-      .input('id', sql.Int, parseInt(id)).input('deletedBy', sql.Int, deletedBy)
-      .query(`UPDATE Sales SET deletedAt=GETDATE(), deletedBy=@deletedBy WHERE id=@id`);
-    // Return stock
-    await transaction.request()
-      .input('qty', sql.Int, orig.quantity).input('eggSize', sql.NVarChar(10), orig.eggSize)
-      .query(`UPDATE Inventory SET quantity=quantity+@qty, updatedAt=GETDATE() WHERE eggSize=@eggSize`);
-    await transaction.commit();
-  } catch (err) { await transaction.rollback(); throw err; }
+	const orig = await getSaleById(id);
+	await prisma.$transaction(async (tx) => {
+		await tx.sales.update({
+			where: { id: parseInt(id) },
+			data: { deletedAt: new Date(), deletedBy },
+		});
+		// Return stock
+		await tx.inventory.updateMany({
+			where: { eggSize: orig.eggSize },
+			data: { quantity: { increment: orig.quantity }, updatedAt: new Date() },
+		});
+	});
 }
 
 // ── Multi-line invoice: one atomic transaction, shared invoice number ─────────
 function generateInvoiceNo(date) {
-  const d   = date ? new Date(date) : new Date();
-  const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
-  return `INV-${ymd}-${String(Math.floor(1000 + Math.random() * 9000))}`;
+	const d = date ? new Date(date) : new Date();
+	const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
+	return `INV-${ymd}-${String(Math.floor(1000 + Math.random() * 9000))}`;
 }
 
 async function createInvoice({ customerId, saleDate, notes, items, bankAccountId }, userId) {
-  if (!items || items.length === 0) {
-    const e = new Error('Invoice must have at least one line item'); e.statusCode = 400; throw e;
-  }
+	if (!items || items.length === 0) {
+		const e = new Error('Invoice must have at least one line item');
+		e.statusCode = 400;
+		throw e;
+	}
 
-  const pool = await getPool();
+	// Aggregate per-size totals and validate stock in one pass
+	const sizeQtys = {};
+	for (const item of items) {
+		sizeQtys[item.eggSize] = (sizeQtys[item.eggSize] || 0) + parseInt(item.quantity);
+	}
+	for (const [eggSize, totalQty] of Object.entries(sizeQtys)) {
+		const stock = await prisma.inventory.findFirst({ where: { eggSize } });
+		const available = stock?.quantity || 0;
+		if (available < totalQty) {
+			const e = new Error(`Insufficient stock for ${eggSize} eggs. Available: ${available}, required: ${totalQty}`);
+			e.statusCode = 400;
+			throw e;
+		}
+	}
 
-  // Aggregate per-size totals and validate stock in one pass
-  const sizeQtys = {};
-  for (const item of items) {
-    sizeQtys[item.eggSize] = (sizeQtys[item.eggSize] || 0) + parseInt(item.quantity);
-  }
-  for (const [eggSize, totalQty] of Object.entries(sizeQtys)) {
-    const stock = await pool.request()
-      .input('eggSize', sql.NVarChar(10), eggSize)
-      .query('SELECT quantity FROM Inventory WHERE eggSize = @eggSize');
-    const available = stock.recordset[0]?.quantity || 0;
-    if (available < totalQty) {
-      const e = new Error(`Insufficient stock for ${eggSize} eggs. Available: ${available}, required: ${totalQty}`);
-      e.statusCode = 400; throw e;
-    }
-  }
+	const invoiceNo = generateInvoiceNo(saleDate);
 
-  const invoiceNo   = generateInvoiceNo(saleDate);
-  const transaction = new sql.Transaction(pool);
-  const insertedIds = [];
+	const rows = await prisma.$transaction(async (tx) => {
+		const insertedIds = [];
+		for (const item of items) {
+			const sale = await tx.sales.create({
+				data: {
+					customerId: parseInt(customerId),
+					eggSize: item.eggSize,
+					quantity: parseInt(item.quantity),
+					unitPrice: parseFloat(item.unitPrice),
+					saleDate: saleDate ? new Date(saleDate) : new Date(),
+					notes: notes || null,
+					invoiceNo,
+				},
+			});
+			insertedIds.push(sale.id);
 
-  try {
-    await transaction.begin();
-    for (const item of items) {
-      const r = await transaction.request()
-        .input('customerId', sql.Int,           parseInt(customerId))
-        .input('eggSize',    sql.NVarChar(10),  item.eggSize)
-        .input('quantity',   sql.Int,           parseInt(item.quantity))
-        .input('unitPrice',  sql.Decimal(10,2), parseFloat(item.unitPrice))
-        .input('saleDate',   sql.Date,          saleDate || new Date())
-        .input('notes',      sql.NVarChar(500), notes || null)
-        .input('invoiceNo',  sql.NVarChar(20),  invoiceNo)
-        .query(`
-          INSERT INTO Sales (customerId, eggSize, quantity, unitPrice, saleDate, notes, invoiceNo)
-          OUTPUT INSERTED.id
-          VALUES (@customerId, @eggSize, @quantity, @unitPrice, @saleDate, @notes, @invoiceNo)
-        `);
-      insertedIds.push(r.recordset[0].id);
-      await transaction.request()
-        .input('qty',     sql.Int,          parseInt(item.quantity))
-        .input('eggSize', sql.NVarChar(10), item.eggSize)
-        .query(`UPDATE Inventory SET quantity = quantity - @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
-    }
-    await transaction.commit();
+			await tx.inventory.updateMany({
+				where: { eggSize: item.eggSize },
+				data: { quantity: { decrement: parseInt(item.quantity) }, updatedAt: new Date() },
+			});
+		}
 
-    const full = await pool.request().query(`
-      SELECT s.*, c.name AS customerName, c.phone, c.address
-      FROM Sales s JOIN Customers c ON c.id = s.customerId
-      WHERE s.id IN (${insertedIds.join(',')})
-      ORDER BY s.id
-    `);
-    const rows = full.recordset;
-    if (bankAccountId && userId) {
-      const totalAmt = items.reduce((s, i) => s + parseInt(i.quantity) * parseFloat(i.unitPrice), 0);
-      await bankService.createDeposit({
-        bankAccountId,
-        amount: totalAmt,
-        description: `Invoice deposit — ${rows[0].customerName}`,
-        reference: invoiceNo,
-        transactionDate: saleDate || new Date(),
-      }, userId);
-    }
-    return {
-      invoiceNo,
-      sales: rows,
-      customer: { name: rows[0].customerName, phone: rows[0].phone, address: rows[0].address },
-    };
-  } catch (err) { await transaction.rollback(); throw err; }
+		const full = await tx.sales.findMany({
+			where: { id: { in: insertedIds } },
+			include: { customer: { select: { name: true, phone: true, address: true } } },
+			orderBy: { id: 'asc' },
+		});
+		return full.map(mapSaleFull);
+	});
+
+	if (bankAccountId && userId) {
+		const totalAmt = items.reduce((s, i) => s + parseInt(i.quantity) * parseFloat(i.unitPrice), 0);
+		await bankService.createDeposit({
+			bankAccountId,
+			amount: totalAmt,
+			description: `Invoice deposit — ${rows[0].customerName}`,
+			reference: invoiceNo,
+			transactionDate: saleDate || new Date(),
+		}, userId);
+	}
+	return {
+		invoiceNo,
+		sales: rows,
+		customer: { name: rows[0].customerName, phone: rows[0].phone, address: rows[0].address },
+	};
 }
 
 module.exports = { getAllSales, getSaleById, createSale, updateSale, deleteSale, createInvoice };

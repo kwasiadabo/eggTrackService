@@ -1,28 +1,28 @@
-const { getPool } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNumber } = require('../utils/decimal');
 
 async function getDashboardStats() {
-  const pool = await getPool();
+	const [inventory, sales, payments, expenses] = await Promise.all([
+		prisma.inventory.findMany({ select: { eggSize: true, quantity: true } }),
+		prisma.sales.aggregate({ _sum: { totalAmount: true }, _count: { _all: true } }),
+		prisma.payments.aggregate({ _sum: { amount: true } }),
+		prisma.expenses.aggregate({ _sum: { amount: true } }),
+	]);
 
-  const [inventory, sales, payments, expenses] = await Promise.all([
-    pool.request().query('SELECT eggSize, quantity FROM Inventory'),
-    pool.request().query('SELECT COALESCE(SUM(totalAmount),0) AS totalRevenue, COUNT(*) AS totalSales FROM Sales WHERE deletedAt IS NULL'),
-    pool.request().query('SELECT COALESCE(SUM(amount),0) AS totalPaid FROM Payments WHERE deletedAt IS NULL'),
-    pool.request().query('SELECT COALESCE(SUM(amount),0) AS totalExpenses FROM Expenses WHERE deletedAt IS NULL'),
-  ]);
+	const totalRevenue = toNumber(sales._sum.totalAmount) ?? 0;
+	const totalPaid = toNumber(payments._sum.amount) ?? 0;
+	const totalExpenses = toNumber(expenses._sum.amount) ?? 0;
+	const outstandingDebt = totalRevenue - totalPaid;
 
-  const totalRevenue = sales.recordset[0].totalRevenue;
-  const totalPaid    = payments.recordset[0].totalPaid;
-  const outstandingDebt = totalRevenue - totalPaid;
-
-  return {
-    inventory: inventory.recordset,
-    totalRevenue,
-    totalSales: sales.recordset[0].totalSales,
-    totalPaid,
-    outstandingDebt,
-    totalExpenses: expenses.recordset[0].totalExpenses,
-    netProfit: totalRevenue - expenses.recordset[0].totalExpenses,
-  };
+	return {
+		inventory,
+		totalRevenue,
+		totalSales: sales._count._all,
+		totalPaid,
+		outstandingDebt,
+		totalExpenses,
+		netProfit: totalRevenue - totalExpenses,
+	};
 }
 
 module.exports = { getDashboardStats };

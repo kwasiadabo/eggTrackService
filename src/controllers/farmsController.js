@@ -13,7 +13,7 @@ async function createFarm(req, res, next) {
     const farm = await svc.create(req.body);
     res.status(201).json({ success: true, message: 'Farm added', data: farm });
   } catch (e) {
-    if (e.message?.includes('UQ_Farms_Name') || e.number === 2627)
+    if (e.code === 'P2002' || e.message?.includes('UQ_Farms_Name') || e.number === 2627)
       return res.status(409).json({ success: false, message: 'A farm with this name already exists.' });
     next(e);
   }
@@ -24,7 +24,7 @@ async function updateFarm(req, res, next) {
     const farm = await svc.update(req.params.id, req.body);
     res.json({ success: true, message: 'Farm updated', data: farm });
   } catch (e) {
-    if (e.message?.includes('UQ_Farms_Name') || e.number === 2627)
+    if (e.code === 'P2002' || e.message?.includes('UQ_Farms_Name') || e.number === 2627)
       return res.status(409).json({ success: false, message: 'Another farm already has this name.' });
     next(e);
   }

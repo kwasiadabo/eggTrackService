@@ -1,7 +1,10 @@
 function errorHandler(err, req, res, next) {
   console.error('❌ Error:', err.message || err);
 
-  if (err.code === 'ECONNREFUSED' || err.code === 'ESOCKET') {
+  // ECONNREFUSED/ESOCKET were thrown by the raw mssql driver; P1001/P1002 are
+  // Prisma's equivalents (PrismaClientInitializationError) for "can't reach
+  // the database server" / "connection timed out".
+  if (err.code === 'ECONNREFUSED' || err.code === 'ESOCKET' || err.code === 'P1001' || err.code === 'P1002') {
     return res.status(503).json({
       success: false,
       message: 'Database connection failed. Please check your MSSQL server.',

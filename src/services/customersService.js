@@ -1,21 +1,24 @@
-const { getPool, sql } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNotFoundError } = require('../utils/prismaErrors');
+const { toNumber } = require('../utils/decimal');
 
 async function getAllCustomers() {
-	const pool = await getPool();
-	const result = await pool.request().query(`
-    SELECT id, name, phone, address, email, createdAt, updatedAt
-    FROM Customers WHERE deletedAt IS NULL ORDER BY name
-  `);
-	return result.recordset;
+	return prisma.customers.findMany({
+		select: {
+			id: true,
+			name: true,
+			phone: true,
+			address: true,
+			email: true,
+			createdAt: true,
+			updatedAt: true,
+		},
+		orderBy: { name: 'asc' },
+	});
 }
 
 async function getCustomerById(id) {
-	const pool = await getPool();
-	const result = await pool
-		.request()
-		.input('id', sql.Int, parseInt(id))
-		.query('SELECT * FROM Customers WHERE id = @id AND deletedAt IS NULL');
-	const row = result.recordset[0];
+	const row = await prisma.customers.findFirst({ where: { id: parseInt(id) } });
 	if (!row) {
 		const e = new Error('Customer not found');
 		e.statusCode = 404;
@@ -25,156 +28,155 @@ async function getCustomerById(id) {
 }
 
 async function createCustomer({ name, phone, address, email }) {
-	const pool = await getPool();
-	const result = await pool
-		.request()
-		.input('name', sql.NVarChar(150), name)
-		.input('phone', sql.NVarChar(30), phone || null)
-		.input('address', sql.NVarChar(300), address || null)
-		.input('email', sql.NVarChar(150), email || null)
-		.query(
-			`INSERT INTO Customers (name, phone, address, email) OUTPUT INSERTED.* VALUES (@name, @phone, @address, @email)`,
-		);
-	return result.recordset[0];
+	return prisma.customers.create({
+		data: {
+			name,
+			phone: phone || null,
+			address: address || null,
+			email: email || null,
+		},
+	});
 }
 
 async function updateCustomer(id, { name, phone, address, email }) {
-	const pool = await getPool();
 	const orig = await getCustomerById(id);
-	const result = await pool
-		.request()
-		.input('id', sql.Int, parseInt(id))
-		.input('name', sql.NVarChar(150), name ?? orig.name)
-		.input('phone', sql.NVarChar(30), phone !== undefined ? phone : orig.phone)
-		.input(
-			'address',
-			sql.NVarChar(300),
-			address !== undefined ? address : orig.address,
-		)
-		.input('email', sql.NVarChar(150), email !== undefined ? email : orig.email)
-		.query(`
-      UPDATE Customers
-      SET name = @name, phone = @phone, address = @address, email = @email, updatedAt = GETDATE()
-      OUTPUT INSERTED.*
-      WHERE id = @id AND deletedAt IS NULL
-    `);
-	if (!result.recordset.length) {
-		const e = new Error('Customer not found');
-		e.statusCode = 404;
-		throw e;
+	try {
+		return await prisma.customers.update({
+			where: { id: parseInt(id) },
+			data: {
+				name: name ?? orig.name,
+				phone: phone !== undefined ? phone : orig.phone,
+				address: address !== undefined ? address : orig.address,
+				email: email !== undefined ? email : orig.email,
+				updatedAt: new Date(),
+			},
+		});
+	} catch (err) {
+		throw toNotFoundError(err, 'Customer not found');
 	}
-	return result.recordset[0];
 }
 
 async function deleteCustomer(id, deletedBy) {
-	const pool = await getPool();
 	await getCustomerById(id); // throws 404 if missing
-	// Check for active sales
-	const hasSales = await pool
-		.request()
-		.input('id', sql.Int, parseInt(id))
-		.query(
-			'SELECT TOP 1 id FROM Sales WHERE customerId = @id AND deletedAt IS NULL',
-		);
-	if (hasSales.recordset.length) {
+
+	const hasSales = await prisma.sales.findFirst({
+		where: { customerId: parseInt(id) },
+		select: { id: true },
+	});
+	if (hasSales) {
 		const e = new Error(
 			'Cannot delete customer with active sales records. Archive or delete the sales first.',
 		);
 		e.statusCode = 409;
 		throw e;
 	}
-	await pool
-		.request()
-		.input('id', sql.Int, parseInt(id))
-		.input('deletedBy', sql.Int, deletedBy)
-		.query(
-			'UPDATE Customers SET deletedAt = GETDATE(), deletedBy = @deletedBy WHERE id = @id',
-		);
+
+	try {
+		await prisma.customers.update({
+			where: { id: parseInt(id) },
+			data: { deletedAt: new Date(), deletedBy },
+		});
+	} catch (err) {
+		throw toNotFoundError(err, 'Customer not found');
+	}
 }
 
 async function getCustomerStatement(customerId, dateFrom, dateTo) {
-	const pool = await getPool();
-
 	const customer = await getCustomerById(customerId);
 	const effectiveDateTo = dateTo || new Date().toISOString().split('T')[0];
+	const custId = parseInt(customerId);
 
 	// Opening balance: net of all activity strictly before dateFrom
 	let openingBalance = 0;
 	if (dateFrom) {
-		const [salesRes, paymentsRes] = await Promise.all([
-			pool
-				.request()
-				.input('customerId', sql.Int, parseInt(customerId))
-				.input('dateFrom', sql.Date, dateFrom)
-				.query(
-					`SELECT ISNULL(SUM(totalAmount), 0) AS total
-           FROM Sales WHERE customerId=@customerId AND saleDate < @dateFrom AND deletedAt IS NULL`,
-				),
-			pool
-				.request()
-				.input('customerId', sql.Int, parseInt(customerId))
-				.input('dateFrom', sql.Date, dateFrom)
-				.query(
-					`SELECT ISNULL(SUM(amount), 0) AS total
-           FROM Payments WHERE customerId=@customerId AND paymentDate < @dateFrom AND deletedAt IS NULL`,
-				),
+		const [salesAgg, paymentsAgg] = await Promise.all([
+			prisma.sales.aggregate({
+				where: { customerId: custId, saleDate: { lt: new Date(dateFrom) } },
+				_sum: { totalAmount: true },
+			}),
+			prisma.payments.aggregate({
+				where: { customerId: custId, paymentDate: { lt: new Date(dateFrom) } },
+				_sum: { amount: true },
+			}),
 		]);
 		openingBalance =
-			parseFloat(salesRes.recordset[0].total) -
-			parseFloat(paymentsRes.recordset[0].total);
+			(toNumber(salesAgg._sum.totalAmount) ?? 0) -
+			(toNumber(paymentsAgg._sum.amount) ?? 0);
 	}
 
 	// Sales within the period
-	const salesReq = pool
-		.request()
-		.input('customerId', sql.Int, parseInt(customerId))
-		.input('dateTo', sql.Date, effectiveDateTo);
-	if (dateFrom) salesReq.input('dateFrom', sql.Date, dateFrom);
-
-	const salesResult = await salesReq.query(`
-    SELECT id, 'Sale' AS type, saleDate AS txDate,
-           totalAmount AS debit, 0 AS credit,
-           eggSize, quantity, unitPrice, notes
-    FROM Sales
-    WHERE customerId=@customerId AND deletedAt IS NULL
-      AND saleDate <= @dateTo
-      ${dateFrom ? 'AND saleDate >= @dateFrom' : ''}
-    ORDER BY saleDate, id
-  `);
+	const salesRows = await prisma.sales.findMany({
+		where: {
+			customerId: custId,
+			saleDate: {
+				lte: new Date(effectiveDateTo),
+				...(dateFrom && { gte: new Date(dateFrom) }),
+			},
+		},
+		select: {
+			id: true,
+			saleDate: true,
+			totalAmount: true,
+			eggSize: true,
+			quantity: true,
+			unitPrice: true,
+			notes: true,
+		},
+		orderBy: [{ saleDate: 'asc' }, { id: 'asc' }],
+	});
+	const salesTx = salesRows.map((r) => ({
+		id: r.id,
+		type: 'Sale',
+		txDate: r.saleDate,
+		debit: toNumber(r.totalAmount),
+		credit: 0,
+		eggSize: r.eggSize,
+		quantity: r.quantity,
+		unitPrice: toNumber(r.unitPrice),
+		notes: r.notes,
+	}));
 
 	// Payments within the period
-	const paymentsReq = pool
-		.request()
-		.input('customerId', sql.Int, parseInt(customerId))
-		.input('dateTo', sql.Date, effectiveDateTo);
-	if (dateFrom) paymentsReq.input('dateFrom', sql.Date, dateFrom);
-
-	const paymentsResult = await paymentsReq.query(`
-    SELECT id, 'Payment' AS type, paymentDate AS txDate,
-           0 AS debit, amount AS credit,
-           method, notes
-    FROM Payments
-    WHERE customerId=@customerId AND deletedAt IS NULL
-      AND paymentDate <= @dateTo
-      ${dateFrom ? 'AND paymentDate >= @dateFrom' : ''}
-    ORDER BY paymentDate, id
-  `);
+	const paymentsRows = await prisma.payments.findMany({
+		where: {
+			customerId: custId,
+			paymentDate: {
+				lte: new Date(effectiveDateTo),
+				...(dateFrom && { gte: new Date(dateFrom) }),
+			},
+		},
+		select: {
+			id: true,
+			paymentDate: true,
+			amount: true,
+			method: true,
+			notes: true,
+		},
+		orderBy: [{ paymentDate: 'asc' }, { id: 'asc' }],
+	});
+	const paymentsTx = paymentsRows.map((r) => ({
+		id: r.id,
+		type: 'Payment',
+		txDate: r.paymentDate,
+		debit: 0,
+		credit: toNumber(r.amount),
+		method: r.method,
+		notes: r.notes,
+	}));
 
 	// Merge, sort by date then Sales-before-Payments on the same day
-	const merged = [...salesResult.recordset, ...paymentsResult.recordset].sort(
-		(a, b) => {
-			const diff = new Date(a.txDate) - new Date(b.txDate);
-			if (diff !== 0) return diff;
-			if (a.type === 'Sale' && b.type === 'Payment') return -1;
-			if (a.type === 'Payment' && b.type === 'Sale') return 1;
-			return a.id - b.id;
-		},
-	);
+	const merged = [...salesTx, ...paymentsTx].sort((a, b) => {
+		const diff = new Date(a.txDate) - new Date(b.txDate);
+		if (diff !== 0) return diff;
+		if (a.type === 'Sale' && b.type === 'Payment') return -1;
+		if (a.type === 'Payment' && b.type === 'Sale') return 1;
+		return a.id - b.id;
+	});
 
 	// Compute running balance
 	let balance = openingBalance;
 	const transactions = merged.map((t) => {
-		balance += parseFloat(t.debit) - parseFloat(t.credit);
+		balance += t.debit - t.credit;
 		return { ...t, balance: parseFloat(balance.toFixed(2)) };
 	});
 

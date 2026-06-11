@@ -1,71 +1,101 @@
-const { getPool, sql } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNotFoundError } = require('../utils/prismaErrors');
+const { toNumber } = require('../utils/decimal');
+
+function mapExpense(row) {
+	return row && { ...row, amount: toNumber(row.amount) };
+}
 
 async function getAllExpenses() {
-  const pool = await getPool();
-  const result = await pool.request().query(`
-    SELECT id, category, description, amount, expenseDate, createdAt, updatedAt
-    FROM Expenses WHERE deletedAt IS NULL
-    ORDER BY expenseDate DESC, createdAt DESC
-  `);
-  return result.recordset;
+	const rows = await prisma.expenses.findMany({
+		select: {
+			id: true,
+			category: true,
+			description: true,
+			amount: true,
+			expenseDate: true,
+			createdAt: true,
+			updatedAt: true,
+		},
+		orderBy: [{ expenseDate: 'desc' }, { createdAt: 'desc' }],
+	});
+	return rows.map(mapExpense);
 }
 
 async function getExpenseById(id) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('id', sql.Int, parseInt(id))
-    .query('SELECT * FROM Expenses WHERE id=@id AND deletedAt IS NULL');
-  const row = result.recordset[0];
-  if (!row) { const e = new Error('Expense not found'); e.statusCode = 404; throw e; }
-  return row;
+	const row = await prisma.expenses.findFirst({ where: { id: parseInt(id) } });
+	if (!row) {
+		const e = new Error('Expense not found');
+		e.statusCode = 404;
+		throw e;
+	}
+	return mapExpense(row);
 }
 
 async function createExpense({ category, description, amount, expenseDate }) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('category',    sql.NVarChar(100), category)
-    .input('description', sql.NVarChar(500), description)
-    .input('amount',      sql.Decimal(10,2), parseFloat(amount))
-    .input('expenseDate', sql.Date,          expenseDate || new Date())
-    .query(`INSERT INTO Expenses (category, description, amount, expenseDate) OUTPUT INSERTED.* VALUES (@category, @description, @amount, @expenseDate)`);
-  return result.recordset[0];
+	const row = await prisma.expenses.create({
+		data: {
+			category,
+			description,
+			amount: parseFloat(amount),
+			expenseDate: expenseDate ? new Date(expenseDate) : new Date(),
+		},
+	});
+	return mapExpense(row);
 }
 
 async function updateExpense(id, { category, description, amount, expenseDate }) {
-  const pool = await getPool();
-  const orig = await getExpenseById(id);
-  const result = await pool.request()
-    .input('id',          sql.Int,            parseInt(id))
-    .input('category',    sql.NVarChar(100),  category    ?? orig.category)
-    .input('description', sql.NVarChar(500),  description ?? orig.description)
-    .input('amount',      sql.Decimal(10,2),  amount != null ? parseFloat(amount) : orig.amount)
-    .input('expenseDate', sql.Date,           expenseDate ?? orig.expenseDate)
-    .query(`
-      UPDATE Expenses
-      SET category=@category, description=@description, amount=@amount, expenseDate=@expenseDate, updatedAt=GETDATE()
-      OUTPUT INSERTED.*
-      WHERE id=@id AND deletedAt IS NULL
-    `);
-  if (!result.recordset.length) { const e = new Error('Expense not found'); e.statusCode = 404; throw e; }
-  return result.recordset[0];
+	const orig = await getExpenseById(id);
+	try {
+		const row = await prisma.expenses.update({
+			where: { id: parseInt(id) },
+			data: {
+				category: category ?? orig.category,
+				description: description ?? orig.description,
+				amount: amount != null ? parseFloat(amount) : orig.amount,
+				expenseDate: expenseDate != null ? new Date(expenseDate) : orig.expenseDate,
+				updatedAt: new Date(),
+			},
+		});
+		return mapExpense(row);
+	} catch (err) {
+		throw toNotFoundError(err, 'Expense not found');
+	}
 }
 
 async function deleteExpense(id, deletedBy) {
-  const pool = await getPool();
-  await getExpenseById(id);
-  await pool.request()
-    .input('id', sql.Int, parseInt(id)).input('deletedBy', sql.Int, deletedBy)
-    .query('UPDATE Expenses SET deletedAt=GETDATE(), deletedBy=@deletedBy WHERE id=@id');
+	await getExpenseById(id);
+	try {
+		await prisma.expenses.update({
+			where: { id: parseInt(id) },
+			data: { deletedAt: new Date(), deletedBy },
+		});
+	} catch (err) {
+		throw toNotFoundError(err, 'Expense not found');
+	}
 }
 
 async function getExpenseSummary() {
-  const pool = await getPool();
-  const result = await pool.request().query(`
-    SELECT category, SUM(amount) AS total, COUNT(*) AS count
-    FROM Expenses WHERE deletedAt IS NULL
-    GROUP BY category ORDER BY total DESC
-  `);
-  return result.recordset;
+	// groupBy is not covered by the soft-delete extension - filter explicitly.
+	const rows = await prisma.expenses.groupBy({
+		by: ['category'],
+		where: { deletedAt: null },
+		_sum: { amount: true },
+		_count: { _all: true },
+		orderBy: { _sum: { amount: 'desc' } },
+	});
+	return rows.map((r) => ({
+		category: r.category,
+		total: toNumber(r._sum.amount),
+		count: r._count._all,
+	}));
 }
 
-module.exports = { getAllExpenses, getExpenseById, createExpense, updateExpense, deleteExpense, getExpenseSummary };
+module.exports = {
+	getAllExpenses,
+	getExpenseById,
+	createExpense,
+	updateExpense,
+	deleteExpense,
+	getExpenseSummary,
+};

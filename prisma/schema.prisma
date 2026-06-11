@@ -1,0 +1,230 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+}
+
+model BankAccounts {
+  id            Int                @id(map: "PK__BankAcco__3213E83FD08577BD") @default(autoincrement())
+  bankName      String             @db.NVarChar(150)
+  accountName   String             @db.NVarChar(150)
+  accountNumber String             @db.NVarChar(50)
+  branch        String?            @db.NVarChar(150)
+  isActive      Boolean            @default(true, map: "DF__BankAccou__isAct__01142BA1")
+  createdAt     DateTime           @default(now(), map: "DF__BankAccou__creat__02084FDA")
+  updatedAt     DateTime           @default(now(), map: "DF__BankAccou__updat__02FC7413")
+  transactions  BankTransactions[]
+
+  @@index([isActive], map: "IX_BankAccounts_IsActive")
+}
+
+model BankTransactions {
+  id              Int          @id(map: "PK__BankTran__3213E83F8D097029") @default(autoincrement())
+  bankAccountId   Int
+  type            String       @db.NVarChar(20)
+  amount          Decimal      @db.Decimal(12, 2)
+  description     String?      @db.NVarChar(500)
+  reference       String?      @db.NVarChar(100)
+  status          String       @default("approved", map: "DF__BankTrans__statu__06CD04F7") @db.NVarChar(20)
+  initiatedById   Int
+  approvedById    Int?
+  approvedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionNote   String?      @db.NVarChar(300)
+  transactionDate DateTime     @default(dbgenerated("CONVERT([date],getdate())"), map: "DF__BankTrans__trans__07C12930") @db.Date
+  createdAt       DateTime     @default(now(), map: "DF__BankTrans__creat__08B54D69")
+  updatedAt       DateTime     @default(now(), map: "DF__BankTrans__updat__09A971A2")
+  bankAccount     BankAccounts @relation(fields: [bankAccountId], references: [id], onUpdate: NoAction, map: "FK_BankTx_Account")
+  approvedBy      Users?       @relation("BankTxApprover", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_BankTx_Approver")
+  initiatedBy     Users        @relation("BankTxInitiator", fields: [initiatedById], references: [id], onUpdate: NoAction, map: "FK_BankTx_Initiator")
+
+  @@index([bankAccountId], map: "IX_BankTx_Account")
+  @@index([transactionDate], map: "IX_BankTx_Date")
+  @@index([status], map: "IX_BankTx_Status")
+}
+
+model Customers {
+  id        Int        @id(map: "PK__Customer__3213E83FED191DB4") @default(autoincrement())
+  name      String     @db.NVarChar(150)
+  phone     String?    @db.NVarChar(30)
+  address   String?    @db.NVarChar(300)
+  email     String?    @db.NVarChar(150)
+  createdAt DateTime   @default(now(), map: "DF__Customers__creat__36B12243")
+  updatedAt DateTime   @default(now(), map: "DF__Customers__updat__37A5467C")
+  deletedAt DateTime?
+  deletedBy Int?
+  payments  Payments[]
+  sales     Sales[]
+
+  @@index([name], map: "IX_Customers_Name")
+}
+
+model EggsPurchases {
+  id            Int       @id(map: "PK__EggsPurc__3213E83FC916E25C") @default(autoincrement())
+  farmName      String    @db.NVarChar(150)
+  eggSize       String    @db.NVarChar(10)
+  quantity      Int
+  costPerTray   Decimal   @db.Decimal(10, 2)
+  totalCost     Decimal?  @db.Decimal(21, 2)
+  purchaseDate  DateTime  @default(dbgenerated("CONVERT([date],getdate())"), map: "DF__EggsPurch__purch__4316F928") @db.Date
+  notes         String?   @db.NVarChar(500)
+  createdAt     DateTime  @default(now(), map: "DF__EggsPurch__creat__440B1D61")
+  updatedAt     DateTime  @default(now(), map: "DF__EggsPurch__updat__44FF419A")
+  deletedAt     DateTime?
+  deletedBy     Int?
+  status        String?   @db.NVarChar(30)
+  initiatedById Int?
+  approvedById  Int?
+  approvedAt    DateTime?
+  rejectedAt    DateTime?
+  rejectionNote String?   @db.NVarChar(300)
+  approvedBy    Users?    @relation("PurchaseApprover", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_EggsPurchases_Approver")
+  initiatedBy   Users?    @relation("PurchaseInitiator", fields: [initiatedById], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_EggsPurchases_Initiator")
+
+  @@index([purchaseDate], map: "IX_EggsPurchases_Date")
+  @@index([eggSize], map: "IX_EggsPurchases_EggSize")
+  @@index([status], map: "IX_EggsPurchases_Status")
+}
+
+model EmailLogs {
+  id             Int      @id(map: "PK__EmailLog__3213E83FB1AC6584") @default(autoincrement())
+  jobType        String   @default("debtors_report", map: "DF__EmailLogs__jobTy__74AE54BC") @db.NVarChar(50)
+  recipients     String?  @db.NVarChar(Max)
+  recipientCount Int      @default(0, map: "DF__EmailLogs__recip__75A278F5")
+  debtorCount    Int?
+  status         String   @default("sent", map: "DF__EmailLogs__statu__76969D2E") @db.NVarChar(20)
+  errorMessage   String?  @db.NVarChar(Max)
+  sentAt         DateTime @default(now(), map: "DF__EmailLogs__sentA__778AC167")
+}
+
+model Expenses {
+  id          Int       @id(map: "PK__Expenses__3213E83FF9E635BA") @default(autoincrement())
+  category    String    @db.NVarChar(100)
+  description String    @db.NVarChar(500)
+  amount      Decimal   @db.Decimal(10, 2)
+  expenseDate DateTime  @default(dbgenerated("CONVERT([date],getdate())"), map: "DF__Expenses__expens__59FA5E80") @db.Date
+  createdAt   DateTime  @default(now(), map: "DF__Expenses__create__5AEE82B9")
+  updatedAt   DateTime  @default(now(), map: "DF__Expenses__update__5BE2A6F2")
+  deletedAt   DateTime?
+  deletedBy   Int?
+
+  @@index([category], map: "IX_Expenses_Category")
+  @@index([expenseDate], map: "IX_Expenses_Date")
+}
+
+model Farms {
+  id        Int       @id(map: "PK__Farms__3213E83FC50FC456") @default(autoincrement())
+  name      String    @unique(map: "UQ_Farms_Name") @db.NVarChar(100)
+  location  String?   @db.NVarChar(200)
+  contact   String?   @db.NVarChar(100)
+  isActive  Boolean   @default(true, map: "DF__Farms__isActive__7B5B524B")
+  createdAt DateTime  @default(now(), map: "DF__Farms__createdAt__7C4F7684")
+  updatedAt DateTime  @default(now(), map: "DF__Farms__updatedAt__7D439ABD")
+  deletedAt DateTime?
+}
+
+model Inventory {
+  id        Int      @id(map: "PK__Inventor__3213E83FDACC6B7D") @default(autoincrement())
+  eggSize   String   @unique(map: "UQ_Inventory_EggSize") @db.NVarChar(10)
+  quantity  Int      @default(0, map: "DF__Inventory__quant__3C69FB99")
+  updatedAt DateTime @default(now(), map: "DF__Inventory__updat__3D5E1FD2")
+}
+
+model Payments {
+  id          Int       @id(map: "PK__Payments__3213E83FC496A29C") @default(autoincrement())
+  customerId  Int
+  saleId      Int?
+  amount      Decimal   @db.Decimal(10, 2)
+  paymentDate DateTime  @default(dbgenerated("CONVERT([date],getdate())"), map: "DF__Payments__paymen__5165187F") @db.Date
+  method      String    @default("cash", map: "DF__Payments__method__52593CB8") @db.NVarChar(50)
+  notes       String?   @db.NVarChar(500)
+  createdAt   DateTime  @default(now(), map: "DF__Payments__create__534D60F1")
+  updatedAt   DateTime  @default(now(), map: "DF__Payments__update__5441852A")
+  deletedAt   DateTime?
+  deletedBy   Int?
+  customer    Customers @relation(fields: [customerId], references: [id], onUpdate: NoAction, map: "FK_Payments_Customer")
+  sale        Sales?    @relation(fields: [saleId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK_Payments_Sale")
+
+  @@index([customerId], map: "IX_Payments_CustomerId")
+  @@index([paymentDate], map: "IX_Payments_Date")
+}
+
+model RefreshTokens {
+  id        Int       @id(map: "PK__RefreshT__3213E83FD2186F4B") @default(autoincrement())
+  userId    Int
+  token     String    @unique(map: "UQ__RefreshT__CA90DA7A8FA2814C") @db.NVarChar(512)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now(), map: "DF__RefreshTo__creat__6A30C649")
+  user      Users     @relation(fields: [userId], references: [id], onUpdate: NoAction, map: "FK_RefreshTokens_User")
+
+  @@index([token], map: "IX_RefreshTokens_Token")
+  @@index([userId], map: "IX_RefreshTokens_UserId")
+}
+
+model ReportRecipients {
+  id            Int       @id(map: "PK__ReportRe__3213E83FD1818000") @default(autoincrement())
+  email         String    @db.NVarChar(150)
+  name          String?   @db.NVarChar(150)
+  isActive      Boolean   @default(true, map: "DF__ReportRec__isAct__6EF57B66")
+  createdAt     DateTime  @default(now(), map: "DF__ReportRec__creat__6FE99F9F")
+  createdBy     Int?
+  deletedAt     DateTime?
+  deletedBy     Int?
+  createdByUser Users?    @relation("ReportRecipientCreator", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK__ReportRec__creat__70DDC3D8")
+  deletedByUser Users?    @relation("ReportRecipientDeleter", fields: [deletedBy], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "FK__ReportRec__delet__71D1E811")
+}
+
+model Roles {
+  id          Int     @id(map: "PK__Roles__3213E83F0D2721A9") @default(autoincrement())
+  name        String  @unique(map: "UQ__Roles__72E12F1B5003A194") @db.NVarChar(30)
+  description String? @db.NVarChar(200)
+  users       Users[]
+}
+
+model Sales {
+  id          Int        @id(map: "PK__Sales__3213E83F8EB159D5") @default(autoincrement())
+  customerId  Int
+  eggSize     String     @db.NVarChar(10)
+  quantity    Int
+  unitPrice   Decimal    @db.Decimal(10, 2)
+  totalAmount Decimal?   @db.Decimal(21, 2)
+  saleDate    DateTime   @default(dbgenerated("CONVERT([date],getdate())"), map: "DF__Sales__saleDate__4AB81AF0") @db.Date
+  notes       String?    @db.NVarChar(500)
+  createdAt   DateTime   @default(now(), map: "DF__Sales__createdAt__4BAC3F29")
+  updatedAt   DateTime   @default(now(), map: "DF__Sales__updatedAt__4CA06362")
+  deletedAt   DateTime?
+  deletedBy   Int?
+  invoiceNo   String?    @db.NVarChar(20)
+  payments    Payments[]
+  customer    Customers  @relation(fields: [customerId], references: [id], onUpdate: NoAction, map: "FK_Sales_Customer")
+
+  @@index([customerId], map: "IX_Sales_CustomerId")
+  @@index([saleDate], map: "IX_Sales_Date")
+  @@index([eggSize], map: "IX_Sales_EggSize")
+}
+
+model Users {
+  id                      Int                @id(map: "PK__Users__3213E83F51CF9C97") @default(autoincrement())
+  name                    String             @db.NVarChar(150)
+  email                   String             @unique(map: "UQ__Users__AB6E61649E232284") @db.NVarChar(150)
+  passwordHash            String             @db.NVarChar(255)
+  roleId                  Int                @default(3, map: "DF__Users__roleId__628FA481")
+  isActive                Boolean            @default(true, map: "DF__Users__isActive__6383C8BA")
+  lastLoginAt             DateTime?
+  createdAt               DateTime           @default(now(), map: "DF__Users__createdAt__6477ECF3")
+  updatedAt               DateTime           @default(now(), map: "DF__Users__updatedAt__656C112C")
+  mustChangePassword      Boolean            @default(false, map: "DF__Users__mustChang__0F624AF8")
+  bankTxApproved          BankTransactions[] @relation("BankTxApprover")
+  bankTxInitiated         BankTransactions[] @relation("BankTxInitiator")
+  purchasesApproved       EggsPurchases[]    @relation("PurchaseApprover")
+  purchasesInitiated      EggsPurchases[]    @relation("PurchaseInitiator")
+  refreshTokens           RefreshTokens[]
+  reportRecipientsCreated ReportRecipients[] @relation("ReportRecipientCreator")
+  reportRecipientsDeleted ReportRecipients[] @relation("ReportRecipientDeleter")
+  role                    Roles              @relation(fields: [roleId], references: [id], onUpdate: NoAction, map: "FK_Users_Role")
+
+  @@index([email], map: "IX_Users_Email")
+}

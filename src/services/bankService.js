@@ -1,198 +1,222 @@
-const { getPool, sql } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNotFoundError } = require('../utils/prismaErrors');
+const { toNumber } = require('../utils/decimal');
+
+function mapTx(row) {
+	return row && { ...row, amount: toNumber(row.amount) };
+}
+
+async function getAccountBalance(bankAccountId) {
+	const sums = await prisma.bankTransactions.groupBy({
+		by: ['type'],
+		where: { bankAccountId, status: 'approved' },
+		_sum: { amount: true },
+	});
+	const deposits = toNumber(sums.find((s) => s.type === 'deposit')?._sum.amount) ?? 0;
+	const withdrawals = toNumber(sums.find((s) => s.type === 'withdrawal')?._sum.amount) ?? 0;
+	return deposits - withdrawals;
+}
 
 // ── Accounts ──────────────────────────────────────────────────────────────────
 
 async function listAccounts(includeInactive = false) {
-  const pool = await getPool();
-  const where = includeInactive ? '' : 'WHERE a.isActive = 1';
-  const result = await pool.request().query(`
-    SELECT a.id, a.bankName, a.accountName, a.accountNumber, a.branch, a.isActive,
-           a.createdAt, a.updatedAt,
-           COALESCE((
-             SELECT SUM(t.amount) FROM BankTransactions t
-             WHERE t.bankAccountId = a.id AND t.type = 'deposit' AND t.status = 'approved'
-           ), 0) -
-           COALESCE((
-             SELECT SUM(t.amount) FROM BankTransactions t
-             WHERE t.bankAccountId = a.id AND t.type = 'withdrawal' AND t.status = 'approved'
-           ), 0) AS balance
-    FROM BankAccounts a
-    ${where}
-    ORDER BY a.createdAt
-  `);
-  return result.recordset;
+	const [accounts, txSums] = await Promise.all([
+		prisma.bankAccounts.findMany({
+			where: includeInactive ? {} : { isActive: true },
+			orderBy: { createdAt: 'asc' },
+		}),
+		prisma.bankTransactions.groupBy({
+			by: ['bankAccountId', 'type'],
+			where: { status: 'approved' },
+			_sum: { amount: true },
+		}),
+	]);
+
+	const balanceMap = new Map();
+	for (const row of txSums) {
+		const cur = balanceMap.get(row.bankAccountId) || { deposit: 0, withdrawal: 0 };
+		cur[row.type] = toNumber(row._sum.amount) ?? 0;
+		balanceMap.set(row.bankAccountId, cur);
+	}
+
+	return accounts.map((a) => {
+		const sums = balanceMap.get(a.id) || { deposit: 0, withdrawal: 0 };
+		return { ...a, balance: sums.deposit - sums.withdrawal };
+	});
 }
 
 async function createAccount({ bankName, accountName, accountNumber, branch }) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('bankName',      sql.NVarChar(150), bankName)
-    .input('accountName',   sql.NVarChar(150), accountName)
-    .input('accountNumber', sql.NVarChar(50),  accountNumber)
-    .input('branch',        sql.NVarChar(150), branch || null)
-    .query(`
-      INSERT INTO BankAccounts (bankName, accountName, accountNumber, branch)
-      OUTPUT INSERTED.*
-      VALUES (@bankName, @accountName, @accountNumber, @branch)
-    `);
-  return { ...result.recordset[0], balance: 0 };
+	const row = await prisma.bankAccounts.create({
+		data: { bankName, accountName, accountNumber, branch: branch || null },
+	});
+	return { ...row, balance: 0 };
 }
 
 async function updateAccount(id, { bankName, accountName, accountNumber, branch, isActive }) {
-  const pool = await getPool();
-  const fields = [];
-  const req = pool.request().input('id', sql.Int, parseInt(id));
-  if (bankName      !== undefined) { fields.push('bankName = @bankName');           req.input('bankName',      sql.NVarChar(150), bankName); }
-  if (accountName   !== undefined) { fields.push('accountName = @accountName');     req.input('accountName',   sql.NVarChar(150), accountName); }
-  if (accountNumber !== undefined) { fields.push('accountNumber = @accountNumber'); req.input('accountNumber', sql.NVarChar(50),  accountNumber); }
-  if (branch        !== undefined) { fields.push('branch = @branch');               req.input('branch',        sql.NVarChar(150), branch); }
-  if (isActive      !== undefined) { fields.push('isActive = @isActive');           req.input('isActive',      sql.Bit,          isActive ? 1 : 0); }
-  if (!fields.length) { const e = new Error('Nothing to update'); e.statusCode = 400; throw e; }
-  fields.push('updatedAt = GETDATE()');
-  const result = await req.query(
-    `UPDATE BankAccounts SET ${fields.join(', ')} OUTPUT INSERTED.* WHERE id = @id`
-  );
-  if (!result.recordset.length) { const e = new Error('Account not found'); e.statusCode = 404; throw e; }
-  return result.recordset[0];
+	const data = {
+		...(bankName !== undefined && { bankName }),
+		...(accountName !== undefined && { accountName }),
+		...(accountNumber !== undefined && { accountNumber }),
+		...(branch !== undefined && { branch }),
+		...(isActive !== undefined && { isActive: !!isActive }),
+	};
+	if (!Object.keys(data).length) {
+		const e = new Error('Nothing to update');
+		e.statusCode = 400;
+		throw e;
+	}
+	data.updatedAt = new Date();
+
+	try {
+		return await prisma.bankAccounts.update({ where: { id: parseInt(id) }, data });
+	} catch (err) {
+		throw toNotFoundError(err, 'Account not found');
+	}
 }
 
 // ── Transactions ──────────────────────────────────────────────────────────────
 
 async function listTransactions({ bankAccountId, type, status, fromDate, toDate } = {}) {
-  const pool = await getPool();
-  const conditions = [];
-  const req = pool.request();
-  if (bankAccountId) { conditions.push('t.bankAccountId = @bankAccountId'); req.input('bankAccountId', sql.Int,          parseInt(bankAccountId)); }
-  if (type)          { conditions.push('t.type = @type');                   req.input('type',          sql.NVarChar(20), type); }
-  if (status)        { conditions.push('t.status = @status');               req.input('status',        sql.NVarChar(20), status); }
-  if (fromDate)      { conditions.push('t.transactionDate >= @fromDate');   req.input('fromDate',      sql.Date,         fromDate); }
-  if (toDate)        { conditions.push('t.transactionDate <= @toDate');     req.input('toDate',        sql.Date,         toDate); }
-  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
-  const result = await req.query(`
-    SELECT t.id, t.bankAccountId, a.bankName, a.accountName, a.accountNumber,
-           t.type, t.amount, t.description, t.reference, t.status,
-           t.transactionDate, t.createdAt,
-           t.initiatedById, ui.name AS initiatedByName,
-           t.approvedById,  ua.name AS approvedByName,
-           t.approvedAt, t.rejectedAt, t.rejectionNote
-    FROM BankTransactions t
-    JOIN BankAccounts a ON a.id = t.bankAccountId
-    JOIN Users ui ON ui.id = t.initiatedById
-    LEFT JOIN Users ua ON ua.id = t.approvedById
-    ${where}
-    ORDER BY t.createdAt DESC
-  `);
-  return result.recordset;
+	const where = {
+		...(bankAccountId && { bankAccountId: parseInt(bankAccountId) }),
+		...(type && { type }),
+		...(status && { status }),
+		...((fromDate || toDate) && {
+			transactionDate: {
+				...(fromDate && { gte: new Date(fromDate) }),
+				...(toDate && { lte: new Date(toDate) }),
+			},
+		}),
+	};
+
+	const rows = await prisma.bankTransactions.findMany({
+		where,
+		include: {
+			bankAccount: { select: { bankName: true, accountName: true, accountNumber: true } },
+			initiatedBy: { select: { name: true } },
+			approvedBy: { select: { name: true } },
+		},
+		orderBy: { createdAt: 'desc' },
+	});
+
+	return rows.map(({ bankAccount, initiatedBy, approvedBy, ...t }) => ({
+		id: t.id,
+		bankAccountId: t.bankAccountId,
+		bankName: bankAccount.bankName,
+		accountName: bankAccount.accountName,
+		accountNumber: bankAccount.accountNumber,
+		type: t.type,
+		amount: toNumber(t.amount),
+		description: t.description,
+		reference: t.reference,
+		status: t.status,
+		transactionDate: t.transactionDate,
+		createdAt: t.createdAt,
+		initiatedById: t.initiatedById,
+		initiatedByName: initiatedBy.name,
+		approvedById: t.approvedById,
+		approvedByName: approvedBy?.name ?? null,
+		approvedAt: t.approvedAt,
+		rejectedAt: t.rejectedAt,
+		rejectionNote: t.rejectionNote,
+	}));
 }
 
 async function createDeposit({ bankAccountId, amount, description, reference, transactionDate }, userId) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('bankAccountId',   sql.Int,           parseInt(bankAccountId))
-    .input('amount',          sql.Decimal(12, 2), parseFloat(amount))
-    .input('description',     sql.NVarChar(500),  description    || null)
-    .input('reference',       sql.NVarChar(100),  reference      || null)
-    .input('transactionDate', sql.Date,           transactionDate || new Date())
-    .input('initiatedById',   sql.Int,           userId)
-    .query(`
-      INSERT INTO BankTransactions
-        (bankAccountId, type, amount, description, reference, transactionDate, status, initiatedById, approvedById, approvedAt)
-      OUTPUT INSERTED.*
-      VALUES (@bankAccountId, 'deposit', @amount, @description, @reference, @transactionDate,
-              'approved', @initiatedById, @initiatedById, GETDATE())
-    `);
-  return result.recordset[0];
+	const row = await prisma.bankTransactions.create({
+		data: {
+			bankAccountId: parseInt(bankAccountId),
+			type: 'deposit',
+			amount: parseFloat(amount),
+			description: description || null,
+			reference: reference || null,
+			transactionDate: transactionDate ? new Date(transactionDate) : new Date(),
+			status: 'approved',
+			initiatedById: userId,
+			approvedById: userId,
+			approvedAt: new Date(),
+		},
+	});
+	return mapTx(row);
 }
 
 async function createWithdrawal({ bankAccountId, amount, description, reference, transactionDate }, userId, userRole) {
-  const pool = await getPool();
+	const balance = await getAccountBalance(parseInt(bankAccountId));
+	if (parseFloat(amount) > balance) {
+		const e = new Error(`Insufficient balance. Available: GH₵ ${balance.toFixed(2)}`);
+		e.statusCode = 400;
+		throw e;
+	}
 
-  // Guard: check available balance before allowing withdrawal
-  const balRow = await pool.request()
-    .input('bankAccountId', sql.Int, parseInt(bankAccountId))
-    .query(`
-      SELECT
-        COALESCE((SELECT SUM(amount) FROM BankTransactions WHERE bankAccountId=@bankAccountId AND type='deposit'    AND status='approved'),0) -
-        COALESCE((SELECT SUM(amount) FROM BankTransactions WHERE bankAccountId=@bankAccountId AND type='withdrawal' AND status='approved'),0)
-      AS balance
-    `);
-  const balance = parseFloat(balRow.recordset[0]?.balance || 0);
-  if (parseFloat(amount) > balance) {
-    const e = new Error(`Insufficient balance. Available: GH₵ ${balance.toFixed(2)}`);
-    e.statusCode = 400; throw e;
-  }
-
-  const isAdmin = userRole === 'admin';
-  const status  = isAdmin ? 'approved' : 'pending';
-  const result  = await pool.request()
-    .input('bankAccountId',   sql.Int,           parseInt(bankAccountId))
-    .input('amount',          sql.Decimal(12, 2), parseFloat(amount))
-    .input('description',     sql.NVarChar(500),  description    || null)
-    .input('reference',       sql.NVarChar(100),  reference      || null)
-    .input('transactionDate', sql.Date,           transactionDate || new Date())
-    .input('status',          sql.NVarChar(20),   status)
-    .input('initiatedById',   sql.Int,           userId)
-    .input('approvedById',    sql.Int,           isAdmin ? userId : null)
-    .query(`
-      INSERT INTO BankTransactions
-        (bankAccountId, type, amount, description, reference, transactionDate, status, initiatedById, approvedById, approvedAt)
-      OUTPUT INSERTED.*
-      VALUES (@bankAccountId, 'withdrawal', @amount, @description, @reference, @transactionDate, @status, @initiatedById,
-              ${isAdmin ? '@approvedById, GETDATE()' : 'NULL, NULL'})
-    `);
-  return result.recordset[0];
+	const isAdmin = userRole === 'admin';
+	const status = isAdmin ? 'approved' : 'pending';
+	const row = await prisma.bankTransactions.create({
+		data: {
+			bankAccountId: parseInt(bankAccountId),
+			type: 'withdrawal',
+			amount: parseFloat(amount),
+			description: description || null,
+			reference: reference || null,
+			transactionDate: transactionDate ? new Date(transactionDate) : new Date(),
+			status,
+			initiatedById: userId,
+			...(isAdmin && { approvedById: userId, approvedAt: new Date() }),
+		},
+	});
+	return mapTx(row);
 }
 
 async function approveWithdrawal(id, adminId) {
-  const pool = await getPool();
-  const row = await pool.request().input('id', sql.Int, parseInt(id))
-    .query('SELECT id, status, type FROM BankTransactions WHERE id = @id');
-  const tx = row.recordset[0];
-  if (!tx) { const e = new Error('Transaction not found'); e.statusCode = 404; throw e; }
-  if (tx.type !== 'withdrawal' || tx.status !== 'pending') {
-    const e = new Error('Only pending withdrawal requests can be approved'); e.statusCode = 400; throw e;
-  }
-  const result = await pool.request()
-    .input('id',         sql.Int, parseInt(id))
-    .input('approvedBy', sql.Int, adminId)
-    .query(`
-      UPDATE BankTransactions
-      SET status='approved', approvedById=@approvedBy, approvedAt=GETDATE(), updatedAt=GETDATE()
-      OUTPUT INSERTED.*
-      WHERE id=@id
-    `);
-  return result.recordset[0];
+	const tx = await prisma.bankTransactions.findFirst({
+		where: { id: parseInt(id) },
+		select: { id: true, status: true, type: true },
+	});
+	if (!tx) {
+		const e = new Error('Transaction not found');
+		e.statusCode = 404;
+		throw e;
+	}
+	if (tx.type !== 'withdrawal' || tx.status !== 'pending') {
+		const e = new Error('Only pending withdrawal requests can be approved');
+		e.statusCode = 400;
+		throw e;
+	}
+	const row = await prisma.bankTransactions.update({
+		where: { id: parseInt(id) },
+		data: { status: 'approved', approvedById: adminId, approvedAt: new Date(), updatedAt: new Date() },
+	});
+	return mapTx(row);
 }
 
 async function rejectWithdrawal(id, adminId, rejectionNote) {
-  const pool = await getPool();
-  const row = await pool.request().input('id', sql.Int, parseInt(id))
-    .query('SELECT id, status, type FROM BankTransactions WHERE id = @id');
-  const tx = row.recordset[0];
-  if (!tx) { const e = new Error('Transaction not found'); e.statusCode = 404; throw e; }
-  if (tx.type !== 'withdrawal' || tx.status !== 'pending') {
-    const e = new Error('Only pending withdrawal requests can be rejected'); e.statusCode = 400; throw e;
-  }
-  const result = await pool.request()
-    .input('id',      sql.Int,           parseInt(id))
-    .input('adminId', sql.Int,           adminId)
-    .input('note',    sql.NVarChar(300), rejectionNote || null)
-    .query(`
-      UPDATE BankTransactions
-      SET status='rejected', approvedById=@adminId, rejectedAt=GETDATE(), rejectionNote=@note, updatedAt=GETDATE()
-      OUTPUT INSERTED.*
-      WHERE id=@id
-    `);
-  return result.recordset[0];
+	const tx = await prisma.bankTransactions.findFirst({
+		where: { id: parseInt(id) },
+		select: { id: true, status: true, type: true },
+	});
+	if (!tx) {
+		const e = new Error('Transaction not found');
+		e.statusCode = 404;
+		throw e;
+	}
+	if (tx.type !== 'withdrawal' || tx.status !== 'pending') {
+		const e = new Error('Only pending withdrawal requests can be rejected');
+		e.statusCode = 400;
+		throw e;
+	}
+	const row = await prisma.bankTransactions.update({
+		where: { id: parseInt(id) },
+		data: { status: 'rejected', approvedById: adminId, rejectedAt: new Date(), rejectionNote: rejectionNote || null, updatedAt: new Date() },
+	});
+	return mapTx(row);
 }
 
 module.exports = {
-  listAccounts,
-  createAccount,
-  updateAccount,
-  listTransactions,
-  createDeposit,
-  createWithdrawal,
-  approveWithdrawal,
-  rejectWithdrawal,
+	listAccounts,
+	createAccount,
+	updateAccount,
+	listTransactions,
+	createDeposit,
+	createWithdrawal,
+	approveWithdrawal,
+	rejectWithdrawal,
 };

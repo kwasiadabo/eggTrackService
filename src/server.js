@@ -1,12 +1,13 @@
 const app        = require('./app');
-const { getPool, closePool } = require('./config/database');
+const { prisma } = require('./config/prisma');
 const { registerDebtorsJob } = require('./jobs/debtorsMailer');
 
 const PORT = process.env.PORT || 5000;
 
 async function start() {
   try {
-    await getPool(); // verify DB connection on startup
+    await prisma.$queryRaw`SELECT 1`; // verify DB connection on startup
+    console.log('✅ Connected to MSSQL database');
     registerDebtorsJob();
     const server = app.listen(PORT, () => {
       console.log('');
@@ -19,7 +20,7 @@ async function start() {
 
     process.on('SIGTERM', async () => {
       console.log('Shutting down gracefully…');
-      await closePool();
+      await prisma.$disconnect();
       server.close(() => process.exit(0));
     });
   } catch (err) {

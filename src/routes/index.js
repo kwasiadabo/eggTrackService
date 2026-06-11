@@ -965,14 +965,14 @@ router.put(
 
 // ── Farms ─────────────────────────────────────────────────────────────────────
 router.get('/farms/active', ...requireViewer, farmsCtrl.getActiveFarms); // for purchase dropdown
-router.get('/farms', ...requireViewer, farmsCtrl.getFarms); // full list with inactive
+router.get('/farms', ...requireManager, farmsCtrl.getFarms); // full list with inactive
 router.post(
 	'/farms',
-	...requireViewer,
+	...requireManager,
 	validate({ name: { required: true } }),
 	farmsCtrl.createFarm,
 );
-router.put('/farms/:id', ...requireViewer, farmsCtrl.updateFarm);
+router.put('/farms/:id', ...requireManager, farmsCtrl.updateFarm);
 router.delete('/farms/:id', ...requireAdmin, farmsCtrl.deleteFarm);
 
 // ════════════════════════════════════════════════════════════

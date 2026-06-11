@@ -1,79 +1,76 @@
-const { getPool, sql } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNotFoundError } = require('../utils/prismaErrors');
 
 async function getActiveRecipients() {
-  const pool = await getPool();
-  const result = await pool.request().query(`
-    SELECT email FROM ReportRecipients
-    WHERE deletedAt IS NULL AND isActive = 1
-  `);
-  return result.recordset.map((r) => r.email);
+	const rows = await prisma.reportRecipients.findMany({
+		where: { isActive: true },
+		select: { email: true },
+	});
+	return rows.map((r) => r.email);
 }
 
 async function getAllRecipients() {
-  const pool = await getPool();
-  const result = await pool.request().query(`
-    SELECT id, email, name, isActive, createdAt
-    FROM ReportRecipients
-    WHERE deletedAt IS NULL
-    ORDER BY createdAt DESC
-  `);
-  return result.recordset;
+	return prisma.reportRecipients.findMany({
+		select: { id: true, email: true, name: true, isActive: true, createdAt: true },
+		orderBy: { createdAt: 'desc' },
+	});
 }
 
 async function addRecipient({ email, name, createdBy }) {
-  const pool = await getPool();
+	const exists = await prisma.reportRecipients.findFirst({
+		where: { email },
+		select: { id: true },
+	});
+	if (exists) {
+		const e = new Error('Recipient already exists');
+		e.statusCode = 409;
+		throw e;
+	}
 
-  const exists = await pool.request()
-    .input('email', sql.NVarChar(150), email)
-    .query(`SELECT id FROM ReportRecipients WHERE email = @email AND deletedAt IS NULL`);
-  if (exists.recordset.length) {
-    const e = new Error('Recipient already exists');
-    e.statusCode = 409;
-    throw e;
-  }
-
-  const result = await pool.request()
-    .input('email',     sql.NVarChar(150), email)
-    .input('name',      sql.NVarChar(150), name || null)
-    .input('createdBy', sql.Int,           createdBy || null)
-    .query(`
-      INSERT INTO ReportRecipients (email, name, createdBy)
-      OUTPUT INSERTED.id, INSERTED.email, INSERTED.name, INSERTED.isActive, INSERTED.createdAt
-      VALUES (@email, @name, @createdBy)
-    `);
-  return result.recordset[0];
+	return prisma.reportRecipients.create({
+		data: { email, name: name || null, createdBy: createdBy || null },
+		select: { id: true, email: true, name: true, isActive: true, createdAt: true },
+	});
 }
 
 async function updateRecipient(id, { name, isActive }) {
-  const pool = await getPool();
-  const fields = [];
-  const req = pool.request().input('id', sql.Int, parseInt(id));
+	const data = {
+		...(name !== undefined && { name }),
+		...(isActive !== undefined && { isActive: !!isActive }),
+	};
 
-  if (name !== undefined)     { fields.push('name = @name');         req.input('name',     sql.NVarChar(150), name); }
-  if (isActive !== undefined) { fields.push('isActive = @isActive'); req.input('isActive', sql.Bit,           isActive ? 1 : 0); }
+	if (!Object.keys(data).length) {
+		const e = new Error('No fields to update');
+		e.statusCode = 400;
+		throw e;
+	}
 
-  if (!fields.length) { const e = new Error('No fields to update'); e.statusCode = 400; throw e; }
-
-  const result = await req.query(`
-    UPDATE ReportRecipients SET ${fields.join(', ')}
-    OUTPUT INSERTED.id, INSERTED.email, INSERTED.name, INSERTED.isActive
-    WHERE id = @id AND deletedAt IS NULL
-  `);
-  if (!result.recordset.length) { const e = new Error('Recipient not found'); e.statusCode = 404; throw e; }
-  return result.recordset[0];
+	try {
+		return await prisma.reportRecipients.update({
+			where: { id: parseInt(id) },
+			data,
+			select: { id: true, email: true, name: true, isActive: true },
+		});
+	} catch (err) {
+		throw toNotFoundError(err, 'Recipient not found');
+	}
 }
 
 async function deleteRecipient(id, deletedBy) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('id',        sql.Int, parseInt(id))
-    .input('deletedBy', sql.Int, deletedBy)
-    .query(`
-      UPDATE ReportRecipients SET deletedAt = GETDATE(), deletedBy = @deletedBy
-      OUTPUT INSERTED.id
-      WHERE id = @id AND deletedAt IS NULL
-    `);
-  if (!result.recordset.length) { const e = new Error('Recipient not found'); e.statusCode = 404; throw e; }
+	try {
+		await prisma.reportRecipients.update({
+			where: { id: parseInt(id) },
+			data: { deletedAt: new Date(), deletedBy },
+		});
+	} catch (err) {
+		throw toNotFoundError(err, 'Recipient not found');
+	}
 }
 
-module.exports = { getActiveRecipients, getAllRecipients, addRecipient, updateRecipient, deleteRecipient };
+module.exports = {
+	getActiveRecipients,
+	getAllRecipients,
+	addRecipient,
+	updateRecipient,
+	deleteRecipient,
+};

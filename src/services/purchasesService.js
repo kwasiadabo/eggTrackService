@@ -1,256 +1,237 @@
-const { getPool, sql } = require('../config/database');
+const { prisma } = require('../config/prisma');
+const { toNumber } = require('../utils/decimal');
 
 // Purchases must reference a farm from the authorised (active) Farms list
-async function assertFarmAuthorised(pool, farmName) {
-  const result = await pool.request()
-    .input('farmName', sql.NVarChar(150), farmName)
-    .query(`SELECT id FROM Farms WHERE name = @farmName AND isActive = 1 AND deletedAt IS NULL`);
-  if (!result.recordset.length) {
-    const e = new Error(`"${farmName}" is not on the authorised farms list. Add it in Farm Setup first.`);
-    e.statusCode = 400; throw e;
-  }
+async function assertFarmAuthorised(farmName) {
+	const farm = await prisma.farms.findFirst({ where: { name: farmName, isActive: true } });
+	if (!farm) {
+		const e = new Error(`"${farmName}" is not on the authorised farms list. Add it in Farm Setup first.`);
+		e.statusCode = 400;
+		throw e;
+	}
+}
+
+function mapPurchase(row) {
+	return row && {
+		...row,
+		costPerTray: toNumber(row.costPerTray),
+		totalCost: toNumber(row.totalCost),
+	};
 }
 
 async function getAllPurchases({ status } = {}) {
-  const pool = await getPool();
-  const request = pool.request();
-  let where = 'WHERE p.deletedAt IS NULL';
-  if (status) {
-    where += ' AND p.status = @status';
-    request.input('status', sql.NVarChar(20), status);
-  }
-  const result = await request.query(`
-    SELECT p.id, p.farmName, p.eggSize, p.quantity, p.costPerTray, p.totalCost,
-           p.purchaseDate, p.notes, p.status,
-           p.initiatedById, ui.name AS initiatedByName,
-           p.approvedById,  ua.name AS approvedByName,
-           p.approvedAt, p.rejectedAt, p.rejectionNote,
-           p.createdAt, p.updatedAt
-    FROM EggsPurchases p
-    LEFT JOIN Users ui ON ui.id = p.initiatedById
-    LEFT JOIN Users ua ON ua.id = p.approvedById
-    ${where}
-    ORDER BY p.purchaseDate DESC, p.createdAt DESC
-  `);
-  return result.recordset;
+	const rows = await prisma.eggsPurchases.findMany({
+		where: { ...(status && { status }) },
+		include: {
+			initiatedBy: { select: { name: true } },
+			approvedBy: { select: { name: true } },
+		},
+		orderBy: [{ purchaseDate: 'desc' }, { createdAt: 'desc' }],
+	});
+	return rows.map(({ initiatedBy, approvedBy, ...p }) => ({
+		id: p.id,
+		farmName: p.farmName,
+		eggSize: p.eggSize,
+		quantity: p.quantity,
+		costPerTray: toNumber(p.costPerTray),
+		totalCost: toNumber(p.totalCost),
+		purchaseDate: p.purchaseDate,
+		notes: p.notes,
+		status: p.status,
+		initiatedById: p.initiatedById,
+		initiatedByName: initiatedBy?.name ?? null,
+		approvedById: p.approvedById,
+		approvedByName: approvedBy?.name ?? null,
+		approvedAt: p.approvedAt,
+		rejectedAt: p.rejectedAt,
+		rejectionNote: p.rejectionNote,
+		createdAt: p.createdAt,
+		updatedAt: p.updatedAt,
+	}));
 }
 
 async function getPurchaseById(id) {
-  const pool = await getPool();
-  const result = await pool.request()
-    .input('id', sql.Int, parseInt(id))
-    .query('SELECT * FROM EggsPurchases WHERE id = @id AND deletedAt IS NULL');
-  const row = result.recordset[0];
-  if (!row) { const e = new Error('Purchase not found'); e.statusCode = 404; throw e; }
-  return row;
+	const row = await prisma.eggsPurchases.findFirst({ where: { id: parseInt(id) } });
+	if (!row) {
+		const e = new Error('Purchase not found');
+		e.statusCode = 404;
+		throw e;
+	}
+	return mapPurchase(row);
 }
 
-async function applyInventory(transaction, eggSize, qty) {
-  await transaction.request()
-    .input('qty',     sql.Int,          qty)
-    .input('eggSize', sql.NVarChar(10), eggSize)
-    .query(`
-      MERGE Inventory WITH (HOLDLOCK) AS t
-      USING (VALUES (@eggSize, @qty)) AS s(eggSize, qty) ON t.eggSize = s.eggSize
-      WHEN MATCHED     THEN UPDATE SET quantity = t.quantity + s.qty, updatedAt = GETDATE()
-      WHEN NOT MATCHED THEN INSERT (eggSize, quantity) VALUES (s.eggSize, s.qty);
-    `);
+async function applyInventory(tx, eggSize, qty) {
+	await tx.$executeRaw`
+		MERGE Inventory WITH (HOLDLOCK) AS t
+		USING (VALUES (${eggSize}, ${qty})) AS s(eggSize, qty) ON t.eggSize = s.eggSize
+		WHEN MATCHED     THEN UPDATE SET quantity = t.quantity + s.qty, updatedAt = GETUTCDATE()
+		WHEN NOT MATCHED THEN INSERT (eggSize, quantity) VALUES (s.eggSize, s.qty);
+	`;
 }
 
 // Every purchase is submitted as 'pending' and only updates inventory once an
 // admin approves it — including purchases submitted by an admin.
 async function createPurchase({ farmName, eggSize, quantity, costPerTray, purchaseDate, notes }, userId) {
-  const pool = await getPool();
-  await assertFarmAuthorised(pool, farmName);
+	await assertFarmAuthorised(farmName);
 
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    const r = await transaction.request()
-      .input('farmName',      sql.NVarChar(150), farmName)
-      .input('eggSize',       sql.NVarChar(10),  eggSize)
-      .input('quantity',      sql.Int,            parseInt(quantity))
-      .input('costPerTray',   sql.Decimal(10, 2), parseFloat(costPerTray))
-      .input('purchaseDate',  sql.Date,           purchaseDate || new Date())
-      .input('notes',         sql.NVarChar(500),  notes || null)
-      .input('initiatedById', sql.Int,            userId)
-      .query(`
-        INSERT INTO EggsPurchases
-          (farmName, eggSize, quantity, costPerTray, purchaseDate, notes, status, initiatedById, approvedById, approvedAt)
-        OUTPUT INSERTED.*
-        VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes, 'pending', @initiatedById, NULL, NULL)
-      `);
-    await transaction.commit();
-    return r.recordset[0];
-  } catch (err) { await transaction.rollback(); throw err; }
+	const row = await prisma.eggsPurchases.create({
+		data: {
+			farmName,
+			eggSize,
+			quantity: parseInt(quantity),
+			costPerTray: parseFloat(costPerTray),
+			purchaseDate: purchaseDate ? new Date(purchaseDate) : new Date(),
+			notes: notes || null,
+			status: 'pending',
+			initiatedById: userId,
+			approvedById: null,
+			approvedAt: null,
+		},
+	});
+	return mapPurchase(row);
 }
 
 async function updatePurchase(id, { farmName, eggSize, quantity, costPerTray, purchaseDate, notes }) {
-  const pool = await getPool();
-  // Get original to diff inventory
-  const orig = await getPurchaseById(id);
+	// Get original to diff inventory
+	const orig = await getPurchaseById(id);
 
-  const newFarmName = farmName ?? orig.farmName;
-  if (newFarmName !== orig.farmName) await assertFarmAuthorised(pool, newFarmName);
+	const newFarmName = farmName ?? orig.farmName;
+	if (newFarmName !== orig.farmName) await assertFarmAuthorised(newFarmName);
 
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    const r = await transaction.request()
-      .input('id',          sql.Int,            parseInt(id))
-      .input('farmName',    sql.NVarChar(150),   newFarmName)
-      .input('eggSize',     sql.NVarChar(10),    eggSize     ?? orig.eggSize)
-      .input('quantity',    sql.Int,             quantity    != null ? parseInt(quantity) : orig.quantity)
-      .input('costPerTray', sql.Decimal(10, 2),  costPerTray != null ? parseFloat(costPerTray) : orig.costPerTray)
-      .input('purchaseDate',sql.Date,            purchaseDate ?? orig.purchaseDate)
-      .input('notes',       sql.NVarChar(500),   notes       !== undefined ? notes : orig.notes)
-      .query(`
-        UPDATE EggsPurchases
-        SET farmName = @farmName, eggSize = @eggSize, quantity = @quantity,
-            costPerTray = @costPerTray, purchaseDate = @purchaseDate,
-            notes = @notes, updatedAt = GETDATE()
-        OUTPUT INSERTED.*
-        WHERE id = @id AND deletedAt IS NULL
-      `);
+	const newQty = quantity != null ? parseInt(quantity) : orig.quantity;
+	const newSize = eggSize ?? orig.eggSize;
 
-    // Inventory was only applied for already-approved purchases — only reconcile those.
-    if (orig.status === 'approved') {
-      const newQty  = quantity != null ? parseInt(quantity) : orig.quantity;
-      const newSize = eggSize  ?? orig.eggSize;
-      if (newSize === orig.eggSize) {
-        const diff = newQty - orig.quantity;
-        if (diff !== 0) {
-          await transaction.request()
-            .input('diff',    sql.Int,          diff)
-            .input('eggSize', sql.NVarChar(10), newSize)
-            .query(`UPDATE Inventory SET quantity = quantity + @diff, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
-        }
-      } else {
-        await transaction.request()
-          .input('qty',     sql.Int,          orig.quantity)
-          .input('eggSize', sql.NVarChar(10), orig.eggSize)
-          .query(`UPDATE Inventory SET quantity = quantity - @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
-        await transaction.request()
-          .input('qty',     sql.Int,          newQty)
-          .input('eggSize', sql.NVarChar(10), newSize)
-          .query(`UPDATE Inventory SET quantity = quantity + @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
-      }
-    }
+	return prisma.$transaction(async (tx) => {
+		const updated = await tx.eggsPurchases.update({
+			where: { id: parseInt(id) },
+			data: {
+				farmName: newFarmName,
+				eggSize: newSize,
+				quantity: newQty,
+				costPerTray: costPerTray != null ? parseFloat(costPerTray) : orig.costPerTray,
+				purchaseDate: purchaseDate != null ? new Date(purchaseDate) : orig.purchaseDate,
+				notes: notes !== undefined ? notes : orig.notes,
+				updatedAt: new Date(),
+			},
+		});
 
-    await transaction.commit();
-    return r.recordset[0];
-  } catch (err) { await transaction.rollback(); throw err; }
+		// Inventory was only applied for already-approved purchases — only reconcile those.
+		if (orig.status === 'approved') {
+			if (newSize === orig.eggSize) {
+				const diff = newQty - orig.quantity;
+				if (diff !== 0) {
+					await tx.inventory.updateMany({
+						where: { eggSize: newSize },
+						data: { quantity: { increment: diff }, updatedAt: new Date() },
+					});
+				}
+			} else {
+				await tx.inventory.updateMany({
+					where: { eggSize: orig.eggSize },
+					data: { quantity: { decrement: orig.quantity }, updatedAt: new Date() },
+				});
+				await tx.inventory.updateMany({
+					where: { eggSize: newSize },
+					data: { quantity: { increment: newQty }, updatedAt: new Date() },
+				});
+			}
+		}
+
+		return mapPurchase(updated);
+	});
 }
 
 async function deletePurchase(id, deletedBy) {
-  const pool = await getPool();
-  const orig = await getPurchaseById(id);
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    await transaction.request()
-      .input('id',        sql.Int,      parseInt(id))
-      .input('deletedBy', sql.Int,      deletedBy)
-      .query(`UPDATE EggsPurchases SET deletedAt = GETDATE(), deletedBy = @deletedBy WHERE id = @id`);
-    // Only reverse inventory if it was actually applied (i.e. the purchase was approved)
-    if (orig.status === 'approved') {
-      await transaction.request()
-        .input('qty',     sql.Int,          orig.quantity)
-        .input('eggSize', sql.NVarChar(10), orig.eggSize)
-        .query(`UPDATE Inventory SET quantity = quantity - @qty, updatedAt = GETDATE() WHERE eggSize = @eggSize`);
-    }
-    await transaction.commit();
-    return orig;
-  } catch (err) { await transaction.rollback(); throw err; }
+	const orig = await getPurchaseById(id);
+	return prisma.$transaction(async (tx) => {
+		await tx.eggsPurchases.update({
+			where: { id: parseInt(id) },
+			data: { deletedAt: new Date(), deletedBy },
+		});
+		// Only reverse inventory if it was actually applied (i.e. the purchase was approved)
+		if (orig.status === 'approved') {
+			await tx.inventory.updateMany({
+				where: { eggSize: orig.eggSize },
+				data: { quantity: { decrement: orig.quantity }, updatedAt: new Date() },
+			});
+		}
+		return orig;
+	});
 }
 
 // Create multiple purchase line-items from one farm in a single transaction.
 // All lines are submitted as 'pending' and only update inventory once an admin approves them.
 async function createBatch({ farmName, purchaseDate, notes, items }, userId) {
-  if (!items || items.length === 0) {
-    const e = new Error('Batch must have at least one line item'); e.statusCode = 400; throw e;
-  }
-  const pool = await getPool();
-  await assertFarmAuthorised(pool, farmName);
+	if (!items || items.length === 0) {
+		const e = new Error('Batch must have at least one line item');
+		e.statusCode = 400;
+		throw e;
+	}
+	await assertFarmAuthorised(farmName);
 
-  const transaction = new sql.Transaction(pool);
-  const inserted = [];
-  try {
-    await transaction.begin();
-    for (const item of items) {
-      const r = await transaction.request()
-        .input('farmName',      sql.NVarChar(150), farmName)
-        .input('eggSize',       sql.NVarChar(10),  item.eggSize)
-        .input('quantity',      sql.Int,            parseInt(item.quantity))
-        .input('costPerTray',   sql.Decimal(10, 2), parseFloat(item.costPerTray))
-        .input('purchaseDate',  sql.Date,           purchaseDate || new Date())
-        .input('notes',         sql.NVarChar(500),  notes || null)
-        .input('initiatedById', sql.Int,            userId)
-        .query(`
-          INSERT INTO EggsPurchases
-            (farmName, eggSize, quantity, costPerTray, purchaseDate, notes, status, initiatedById, approvedById, approvedAt)
-          OUTPUT INSERTED.*
-          VALUES (@farmName, @eggSize, @quantity, @costPerTray, @purchaseDate, @notes, 'pending', @initiatedById, NULL, NULL)
-        `);
-      inserted.push(r.recordset[0]);
-    }
-    await transaction.commit();
-    return inserted;
-  } catch (err) { await transaction.rollback(); throw err; }
+	return prisma.$transaction(async (tx) => {
+		const inserted = [];
+		for (const item of items) {
+			const row = await tx.eggsPurchases.create({
+				data: {
+					farmName,
+					eggSize: item.eggSize,
+					quantity: parseInt(item.quantity),
+					costPerTray: parseFloat(item.costPerTray),
+					purchaseDate: purchaseDate ? new Date(purchaseDate) : new Date(),
+					notes: notes || null,
+					status: 'pending',
+					initiatedById: userId,
+					approvedById: null,
+					approvedAt: null,
+				},
+			});
+			inserted.push(mapPurchase(row));
+		}
+		return inserted;
+	});
 }
 
 // ── Admin approval ──────────────────────────────────────────────────────────
 
 async function approvePurchase(id, adminId) {
-  const pool = await getPool();
-  const orig = await getPurchaseById(id);
-  if (orig.status !== 'pending') {
-    const e = new Error('Only pending purchases can be approved'); e.statusCode = 400; throw e;
-  }
-  const transaction = new sql.Transaction(pool);
-  try {
-    await transaction.begin();
-    const r = await transaction.request()
-      .input('id',         sql.Int, parseInt(id))
-      .input('approvedBy', sql.Int, adminId)
-      .query(`
-        UPDATE EggsPurchases
-        SET status='approved', approvedById=@approvedBy, approvedAt=GETDATE(), updatedAt=GETDATE()
-        OUTPUT INSERTED.*
-        WHERE id=@id
-      `);
-    await applyInventory(transaction, orig.eggSize, orig.quantity);
-    await transaction.commit();
-    return r.recordset[0];
-  } catch (err) { await transaction.rollback(); throw err; }
+	const orig = await getPurchaseById(id);
+	if (orig.status !== 'pending') {
+		const e = new Error('Only pending purchases can be approved');
+		e.statusCode = 400;
+		throw e;
+	}
+	return prisma.$transaction(async (tx) => {
+		const updated = await tx.eggsPurchases.update({
+			where: { id: parseInt(id) },
+			data: { status: 'approved', approvedById: adminId, approvedAt: new Date(), updatedAt: new Date() },
+		});
+		await applyInventory(tx, orig.eggSize, orig.quantity);
+		return mapPurchase(updated);
+	});
 }
 
 async function rejectPurchase(id, adminId, rejectionNote) {
-  const pool = await getPool();
-  const orig = await getPurchaseById(id);
-  if (orig.status !== 'pending') {
-    const e = new Error('Only pending purchases can be rejected'); e.statusCode = 400; throw e;
-  }
-  const result = await pool.request()
-    .input('id',      sql.Int,           parseInt(id))
-    .input('adminId', sql.Int,           adminId)
-    .input('note',    sql.NVarChar(300), rejectionNote || null)
-    .query(`
-      UPDATE EggsPurchases
-      SET status='rejected', approvedById=@adminId, rejectedAt=GETDATE(), rejectionNote=@note, updatedAt=GETDATE()
-      OUTPUT INSERTED.*
-      WHERE id=@id
-    `);
-  return result.recordset[0];
+	const orig = await getPurchaseById(id);
+	if (orig.status !== 'pending') {
+		const e = new Error('Only pending purchases can be rejected');
+		e.statusCode = 400;
+		throw e;
+	}
+	const updated = await prisma.eggsPurchases.update({
+		where: { id: parseInt(id) },
+		data: { status: 'rejected', approvedById: adminId, rejectedAt: new Date(), rejectionNote: rejectionNote || null, updatedAt: new Date() },
+	});
+	return mapPurchase(updated);
 }
 
 module.exports = {
-  getAllPurchases,
-  getPurchaseById,
-  createPurchase,
-  updatePurchase,
-  deletePurchase,
-  createBatch,
-  approvePurchase,
-  rejectPurchase,
+	getAllPurchases,
+	getPurchaseById,
+	createPurchase,
+	updatePurchase,
+	deletePurchase,
+	createBatch,
+	approvePurchase,
+	rejectPurchase,
 };
