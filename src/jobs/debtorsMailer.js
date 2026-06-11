@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const transporter = require('../config/mailer');
+const { sendMail } = require('../config/mailer');
 const { getDebtors } = require('../services/paymentsService');
 const { getActiveRecipients } = require('../services/reportRecipientsService');
 const { logEmail } = require('../services/emailLogsService');
@@ -138,9 +138,8 @@ async function sendDebtorsReport() {
 		});
 		const subject = `EggTrack Debtors Report — ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
-		await transporter.sendMail({
-			from: `"EggTrack Reports" <${process.env.EMAIL_USER}>`,
-			to: recipients.join(', '),
+		await sendMail({
+			to: recipients,
 			subject,
 			html: buildEmailHtml(debtors, generatedAt),
 		});
@@ -171,9 +170,8 @@ async function sendDebtorsReportTo(recipients) {
 	const subject = `EggTrack Debtors Report — ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
 	try {
-		await transporter.sendMail({
-			from: `"EggTrack Reports" <${process.env.EMAIL_USER}>`,
-			to: recipients.join(', '),
+		await sendMail({
+			to: recipients,
 			subject,
 			html: buildEmailHtml(debtors, generatedAt),
 		});

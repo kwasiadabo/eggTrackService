@@ -23,7 +23,8 @@ Copy `.env.example` to `.env` and configure:
 - `DB_ENCRYPT`, `DB_TRUST_CERT` — TLS options (default `false`/`true` for local MSSQL)
 - `JWT_SECRET`, `JWT_REFRESH_SECRET` — must be changed before production
 - Access tokens expire in 15 min (`JWT_EXPIRES_IN`); refresh tokens in 7 days (`JWT_REFRESH_EXPIRES_IN`)
-- `EMAIL_USER`, `EMAIL_PASS` — Gmail address + App Password for automated reports
+- `RESEND_API_KEY` — Resend API key for automated reports (raw SMTP to Gmail is blocked/unreliable from Render, so email is sent via Resend's HTTP API)
+- `EMAIL_FROM` — sender address, e.g. `"EggTrack Reports <onboarding@resend.dev>"`. The shared `onboarding@resend.dev` sender only delivers to the Resend account's own email — verify a domain at resend.com/domains to email other recipients
 - `REPORT_HOUR`, `REPORT_MINUTE` — time for the daily debtors report (default `07:15`, Africa/Accra timezone)
 
 The server verifies the DB connection on startup and exits if it can't connect.
@@ -37,7 +38,7 @@ The server verifies the DB connection on startup and exits if it can't connect.
 - `src/controllers/` — thin HTTP layer: extract params, call service, return `{ success, data }` JSON
 - `src/services/` — all business logic and queries; call the shared `prisma` client from `src/config/prisma.js` for each operation
 - `src/jobs/` — cron jobs (currently only `debtorsMailer.js`)
-- `src/config/` — `prisma.js` (Prisma client + `@prisma/adapter-mssql` adapter), `prismaSoftDelete.js` (soft-delete `$extends` query extension), `mailer.js` (nodemailer transporter), `swagger.js`
+- `src/config/` — `prisma.js` (Prisma client + `@prisma/adapter-mssql` adapter), `prismaSoftDelete.js` (soft-delete `$extends` query extension), `mailer.js` (Resend HTTP API client, exports `sendMail({ to, subject, html })`), `swagger.js`
 
 **Two route files:**
 - `src/routes/auth.js` — public auth endpoints (`/api/auth/...`)
